@@ -1,9 +1,11 @@
+// client/src/store/index.js
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from './slices/authSlice';
 import messagesReducer from './slices/messagesSlice';
 import contactsReducer from './slices/contactsSlice';
 import groupsReducer from './slices/groupsSlice';
 
+// Store avec configuration optimisée
 const store = configureStore({
   reducer: {
     auth: authReducer,
@@ -14,11 +16,27 @@ const store = configureStore({
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       serializableCheck: {
-        // Ignore non-serializable values like crypto keys
-        ignoredActionPaths: ['payload.privateKey', 'payload.publicKey'],
-        ignoredPaths: ['auth.privateKey', 'auth.publicKey'],
+        // Ignorer les valeurs non-sérialisables comme les clés cryptographiques
+        ignoredActionPaths: [
+          'payload.privateKey', 
+          'payload.publicKey',
+          'payload.keys',
+          'meta.arg.publicKey',
+          'meta.arg.privateKey'
+        ],
+        ignoredPaths: [
+          'auth.privateKey', 
+          'auth.publicKey'
+        ],
+      },
+      // Activer le mode de développement uniquement en environnement non-production
+      immutableCheck: process.env.NODE_ENV !== 'production',
+      thunk: {
+        extraArgument: undefined,
       },
     }),
+  // Activer le DevTools uniquement en environnement non-production
+  devTools: process.env.NODE_ENV !== 'production',
 });
 
 export default store;

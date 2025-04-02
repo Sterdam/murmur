@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+// client/src/pages/Register.js
+import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { registerUser, clearError, generateKeyPair } from '../store/slices/authSlice';
+import { registerUser, clearError } from '../store/slices/authSlice';
 import { storeEncryptionKeys } from '../utils/storage';
+import { generateKeyPair } from '../services/encryption';
 
 // Components
 import TextField from '../components/ui/TextField';
@@ -43,10 +45,18 @@ const Register = () => {
     confirmPassword: '',
   });
   
-  const { loading, error } = useSelector((state) => state.auth);
+  const { loading, error, isAuthenticated } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
+  const navigate = useNavigate();
   
   const { username, password, confirmPassword } = formData;
+  
+  useEffect(() => {
+    // Redirect if authenticated
+    if (isAuthenticated) {
+      navigate('/');
+    }
+  }, [isAuthenticated, navigate]);
   
   const handleChange = (e) => {
     if (error) dispatch(clearError());
@@ -61,19 +71,31 @@ const Register = () => {
     }
     
     try {
-      // Generate encryption keys
-      const keys = await dispatch(generateKeyPair()).unwrap();
+      // Génération des clés de cryptage
+      console.log("Generating encryption keys...");
+      const keys = await generateKeyPair();
       
-      // Store keys in localStorage
+      if (!keys || !keys.publicKey) {
+        console.error("Failed to generate key pair");
+        throw new Error("Échec de la génération des clés de cryptage");
+      }
+      
+      console.log("Keys generated successfully");
+      
+      // Stockage des clés localement (avant inscription pour être sûr qu'elles sont sauvegardées)
       storeEncryptionKeys(keys);
       
-      // Register user with the public key
-      await dispatch(registerUser({ 
+      // Inscription de l'utilisateur avec la clé publique
+      const userData = { 
         username, 
         password,
         publicKey: keys.publicKey 
-      })).unwrap();
+      };
       
+      console.log("Dispatching registration action...");
+      await dispatch(registerUser(userData)).unwrap();
+      
+      // La redirection sera gérée par l'effet useEffect ci-dessus
     } catch (error) {
       console.error('Registration failed:', error);
     }

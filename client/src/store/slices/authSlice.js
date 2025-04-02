@@ -1,3 +1,4 @@
+// client/src/store/slices/authSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 import { storeCredentials, clearCredentials, getCredentials } from '../../utils/storage';
@@ -5,12 +6,28 @@ import { storeCredentials, clearCredentials, getCredentials } from '../../utils/
 // Async thunks
 export const registerUser = createAsyncThunk(
   'auth/register',
-  async ({ username, password }, { rejectWithValue }) => {
+  async ({ username, password, publicKey }, { rejectWithValue }) => {
     try {
-      const response = await api.post('/auth/register', { username, password });
+      console.log('Registering user with public key of length:', publicKey ? publicKey.length : 'none');
+      
+      const response = await api.post('/auth/register', { 
+        username, 
+        password, 
+        publicKey
+      });
+      
+      if (!response.data || !response.data.data) {
+        throw new Error('Invalid response format from server');
+      }
+      
       return response.data.data;
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Registration failed');
+      console.error('Registration error:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        error.message || 
+        'Registration failed'
+      );
     }
   }
 );
@@ -22,20 +39,23 @@ export const loginUser = createAsyncThunk(
       const response = await api.post('/auth/login', { username, password });
       return response.data.data;
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Login failed');
+      return rejectWithValue(
+        error.response?.data?.message || 
+        error.message || 
+        'Login failed'
+      );
     }
   }
 );
 
+// Fonction simplifiée sans utiliser l'API du serveur
+// Utilise plutôt des clés générées localement dans le component Register
 export const generateKeyPair = createAsyncThunk(
   'auth/generateKeyPair',
   async (_, { rejectWithValue }) => {
-    try {
-      const response = await api.get('/auth/keys/generate');
-      return response.data.data;
-    } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Key generation failed');
-    }
+    // Cette fonction est vide car nous gérons la génération de clés 
+    // directement dans le composant Register.js
+    return {};
   }
 );
 
@@ -50,7 +70,11 @@ export const updateUser = createAsyncThunk(
       });
       return response.data.data;
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Profile update failed');
+      return rejectWithValue(
+        error.response?.data?.message || 
+        error.message || 
+        'Profile update failed'
+      );
     }
   }
 );
@@ -138,10 +162,9 @@ const authSlice = createSlice({
         state.loading = false;
         state.error = action.payload;
       })
-      // Generate Key Pair
+      // Generate Key Pair (vide car géré dans Register.js)
       .addCase(generateKeyPair.fulfilled, (state, action) => {
-        state.privateKey = action.payload.privateKey;
-        state.publicKey = action.payload.publicKey;
+        // Ne rien faire ici, car les clés sont gérées dans Register.js
       })
       // Update Profile
       .addCase(updateUser.pending, (state) => {

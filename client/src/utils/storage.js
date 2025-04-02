@@ -1,83 +1,128 @@
+// client/src/utils/storage.js
+
 /**
- * Store user credentials in localStorage
- * @param {Object} credentials - User credentials
+ * Fonctions utilitaires pour gérer le stockage local sécurisé
+ */
+
+/**
+ * Stocke les identifiants utilisateur dans le localStorage
+ * @param {Object} credentials - Identifiants utilisateur
  */
 export const storeCredentials = (credentials) => {
-  if (credentials.token) {
-    localStorage.setItem('token', credentials.token);
-  }
-  
-  if (credentials.user) {
-    localStorage.setItem('user', JSON.stringify(credentials.user));
+  try {
+    if (credentials.token) {
+      localStorage.setItem('token', credentials.token);
+    }
+    
+    if (credentials.user) {
+      localStorage.setItem('user', JSON.stringify(credentials.user));
+    }
+  } catch (error) {
+    console.error('Error storing credentials:', error);
   }
 };
 
 /**
- * Get stored credentials from localStorage
- * @returns {Object|null} - User credentials or null
+ * Récupère les identifiants stockés depuis le localStorage
+ * @returns {Object|null} - Identifiants utilisateur ou null
  */
 export const getCredentials = () => {
-  const token = localStorage.getItem('token');
-  const userJson = localStorage.getItem('user');
-  
-  if (!token || !userJson) {
-    return null;
-  }
-  
   try {
+    const token = localStorage.getItem('token');
+    const userJson = localStorage.getItem('user');
+    
+    if (!token || !userJson) {
+      return null;
+    }
+    
     const user = JSON.parse(userJson);
     return { token, user };
   } catch (error) {
     console.error('Error parsing stored user:', error);
+    // En cas d'erreur, effacer les données potentiellement corrompues
+    clearCredentials();
     return null;
   }
 };
 
 /**
- * Clear stored credentials from localStorage
+ * Efface les identifiants stockés du localStorage
  */
 export const clearCredentials = () => {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
+  try {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+  } catch (error) {
+    console.error('Error clearing credentials:', error);
+  }
 };
 
 /**
- * Store encryption keys in localStorage
- * Note: In a production app, private keys should be stored in a more secure way
- * @param {Object} keys - Object containing publicKey and privateKey
+ * Stocke les clés de chiffrement dans le localStorage
+ * Cette méthode est simplifiée pour la démonstration
+ * Dans une application réelle, les clés privées devraient être stockées
+ * de manière plus sécurisée (par exemple, chiffrées avec un mot de passe)
+ * 
+ * @param {Object} keys - Objet contenant publicKey et privateKey
  */
 export const storeEncryptionKeys = (keys) => {
-  if (keys.publicKey) {
-    localStorage.setItem('publicKey', keys.publicKey);
-  }
-  
-  if (keys.privateKey) {
-    // WARNING: Storing private keys in localStorage is NOT secure
-    // This is only for demonstration purposes
-    // A real app would use a more secure storage method
-    localStorage.setItem('privateKey', keys.privateKey);
+  try {
+    console.log("Storing encryption keys...");
+    
+    if (!keys) {
+      console.error("No keys provided to store");
+      return;
+    }
+    
+    if (keys.publicKey) {
+      localStorage.setItem('publicKey', keys.publicKey);
+      console.log("Public key stored successfully");
+    } else {
+      console.warn("No public key to store");
+    }
+    
+    if (keys.privateKey) {
+      // ATTENTION: Dans une application réelle, la clé privée devrait être
+      // chiffrée avant d'être stockée
+      localStorage.setItem('privateKey', keys.privateKey);
+      console.log("Private key stored successfully");
+    } else {
+      console.warn("No private key to store");
+    }
+  } catch (error) {
+    console.error('Error storing encryption keys:', error);
   }
 };
 
 /**
- * Get stored encryption keys from localStorage
- * @returns {Object|null} - Object containing publicKey and privateKey, or null
+ * Récupère les clés de chiffrement stockées
+ * @returns {Object|null} - Objet contenant publicKey et privateKey, ou null
  */
 export const getEncryptionKeys = () => {
-  const publicKey = localStorage.getItem('publicKey');
-  const privateKey = localStorage.getItem('privateKey');
-  
-  if (!publicKey || !privateKey) {
+  try {
+    const publicKey = localStorage.getItem('publicKey');
+    const privateKey = localStorage.getItem('privateKey');
+    
+    if (!publicKey || !privateKey) {
+      console.warn("Missing encryption keys in storage");
+      return null;
+    }
+    
+    return { publicKey, privateKey };
+  } catch (error) {
+    console.error('Error retrieving encryption keys:', error);
     return null;
   }
-  
-  return { publicKey, privateKey };
 };
 
 /**
- * Clear stored encryption keys from localStorage
+ * Efface les clés de chiffrement stockées
  */
 export const clearEncryptionKeys = () => {
-  localStorage.removeItem('publicKey');
-  localStorage.removeItem('privateKey');
+  try {
+    localStorage.removeItem('publicKey');
+    localStorage.removeItem('privateKey');
+  } catch (error) {
+    console.error('Error clearing encryption keys:', error);
+  }
 };

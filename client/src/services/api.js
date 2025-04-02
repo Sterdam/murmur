@@ -1,49 +1,69 @@
+// client/src/services/api.js
 import axios from 'axios';
 
-// In production, this should be your actual API endpoint
-const baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+// Configuration de base de l'API
+// Utilisation d'une URL relative pour éviter les problèmes de CORS
+const baseURL = '/api';
 
+// Création de l'instance axios avec la configuration initiale
 const api = axios.create({
   baseURL,
-  timeout: 10000, // 10 seconds
+  timeout: 15000, // 15 secondes
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Intercept requests to add authentication token
+// Intercepteur de requêtes pour ajouter le token d'authentification
 api.interceptors.request.use(
   (config) => {
+    // Récupération du token depuis le localStorage
     const token = localStorage.getItem('token');
+    
+    // Ajout du token à l'en-tête d'autorisation si disponible
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    
     return config;
   },
-  (error) => Promise.reject(error)
+  (error) => {
+    console.error('API request error:', error);
+    return Promise.reject(error);
+  }
 );
 
-// Intercept responses to handle common errors
+// Intercepteur de réponses pour gérer les erreurs courantes
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // Gestion spécifique des erreurs HTTP
     if (error.response) {
-      // Handle 401 unauthorized
+      // Gestion du code 401 (non autorisé)
       if (error.response.status === 401) {
-        // Clear local storage and redirect to login
+        // Effacer les données locales
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         
-        if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+        // Rediriger vers la page de connexion si on n'y est pas déjà
+        const currentPath = window.location.pathname;
+        if (currentPath !== '/login' && currentPath !== '/register') {
           window.location.href = '/login';
         }
       }
       
-      // Return error response
-      return Promise.reject(error);
+      // Gestion des autres codes d'erreur
+      console.error(
+        `API Error ${error.response.status}: ${error.response.data?.message || 'Unknown error'}`
+      );
+    } else if (error.request) {
+      // La requête a été faite mais aucune réponse n'a été reçue
+      console.error('No response received:', error.request);
+    } else {
+      // Une erreur s'est produite lors de la configuration de la requête
+      console.error('Request configuration error:', error.message);
     }
     
-    // Network errors or other issues
     return Promise.reject(error);
   }
 );
