@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
@@ -6,6 +6,8 @@ import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
 
 // Redux actions
 import { fetchConversationMessages, setActiveConversation } from '../store/slices/messagesSlice';
+import { fetchContacts } from '../store/slices/contactsSlice';
+import { fetchGroups } from '../store/slices/groupsSlice';
 
 // Components
 import Avatar from '../components/ui/Avatar';
@@ -98,6 +100,14 @@ const ChatContent = styled.div`
   overflow: hidden;
 `;
 
+const LoadingContainer = styled.div`
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  color: ${({ theme }) => theme.colors.textSecondary};
+`;
+
 const Chat = () => {
   const { conversationId } = useParams();
   const dispatch = useDispatch();
@@ -105,57 +115,84 @@ const Chat = () => {
   
   const { contacts } = useSelector((state) => state.contacts);
   const { groups } = useSelector((state) => state.groups);
+  const { user } = useSelector((state) => state.auth);
+  const { loading: messagesLoading } = useSelector((state) => state.messages);
   
-  // Determine if this is a group or direct chat
-  const isGroup = conversationId.startsWith('group:');
-  const actualId = isGroup ? conversationId.replace('group:', '') : conversationId;
+  const [conversation, setConversation] = useState(null);
+  const [isGroup, setIsGroup] = useState(false);
   
-  // Find the conversation details
-  const conversation = isGroup
-    ? groups.find((group) => group.id === actualId)
-    : contacts.find((contact) => contact.id === actualId || 
-        conversationId.includes(contact.id));
-  
+  // Load contacts and groups if needed
   useEffect(() => {
-    if (conversationId) {
-      // Set active conversation
-      dispatch(setActiveConversation(conversationId));
-      
-      // Fetch messages
-      dispatch(fetchConversationMessages(conversationId));
+    if (contacts.length === 0) {
+      dispatch(fetchContacts());
     }
+    if (groups.length === 0) {
+      dispatch(fetchGroups());
+    }
+  }, [dispatch, contacts.length, groups.length]);
+  
+  // Set up the conversation details based on the conversationId
+  useEffect(() => {
+    if (!conversationId) return;
+    
+    // First, determine if this is a group conversation
+    const groupChat = conversationId.startsWith('group:');
+    setIsGroup(groupChat);
+    
+    let currentConversation = null;
+    
+    if (groupChat) {
+      // For group chats, extract the groupId and find the group
+      const groupId = conversationId.replace('group:', '');
+      const group = groups.find(g => g.id === groupId);
+      if (group) {
+        currentConversation = {
+          ...group,
+          isGroup: true
+        };
+      }
+    } else {
+      // For direct chats, the conversation ID is the sorted user IDs joined with ':'
+      if (user && contacts.length > 0) {
+        // Find the other user's ID in the conversation
+        const participants = conversationId.split(':');
+        const otherUserId = participants[0] === user.id ? participants[1] : participants[0];
+        
+        // Find the contact with this ID
+        const contact = contacts.find(c => c.id === otherUserId);
+        if (contact) {
+          currentConversation = {
+            ...contact,
+            isGroup: false
+          };
+        }
+      }
+    }
+    
+    setConversation(currentConversation);
+    
+    // Set active conversation
+    dispatch(setActiveConversation(conversationId));
+    
+    // Fetch messages
+    dispatch(fetchConversationMessages(conversationId));
     
     return () => {
       // Clear active conversation when unmounting
       dispatch(setActiveConversation(null));
     };
-  }, [conversationId, dispatch]);
+  }, [conversationId, dispatch, groups, contacts, user]);
   
   const handleBack = () => {
     navigate('/');
   };
   
-  if (!conversation) {
-    return (
-      <ChatContainer>
-        <ChatHeader>
-          <BackButton onClick={handleBack}>
-            <RiArrowLeftSLine />
-          </BackButton>
-          <ContactInfo>
-            <ContactName>Conversation</ContactName>
-          </ContactInfo>
-        </ChatHeader>
-        
-        <ChatContent>
-          <div style={{ padding: '16px', textAlign: 'center' }}>
-            Loading conversation...
-          </div>
-        </ChatContent>
-      </ChatContainer>
-    );
-  }
-
+  const handleInfoClick = () => {
+    // Would typically open a sidebar or modal with conversation details
+    // For now we'll just log the information
+    console.log('Conversation details:', conversation);
+  };
+  
   return (
     <ChatContainer>
       <ChatHeader>
@@ -164,35 +201,55 @@ const Chat = () => {
         </BackButton>
         
         <ContactInfo>
-          <Avatar 
-            name={isGroup ? conversation.name : conversation.username} 
-            src={conversation.avatar}
-            color={isGroup ? '#03dac6' : undefined}
-          />
-          <ContactDetails>
-            <ContactName>
-              {isGroup ? conversation.name : conversation.username}
-            </ContactName>
-            <ContactStatus>
-              {isGroup 
-                ? `${conversation.members.length} members` 
-                : 'Online'} {/* Would be dynamic in a real app */}
-            </ContactStatus>
-          </ContactDetails>
+          {conversation ? (
+            <>
+              <Avatar 
+                name={conversation.displayName || conversation.name || conversation.username} 
+                src={conversation.avatar}
+                color={conversation.isGroup ? '#03dac6' : undefined}
+              />
+              <ContactDetails>
+                <ContactName>
+                  {conversation.displayName || conversation.name || conversation.username}
+                </ContactName>
+                <ContactStatus>
+                  {conversation.isGroup 
+                    ? `${conversation.members?.length || 0} members` 
+                    : 'Online'} {/* Status would be dynamic in a real app */}
+                </ContactStatus>
+              </ContactDetails>
+            </>
+          ) : (
+            <>
+              <Avatar name="Unknown" />
+              <ContactDetails>
+                <ContactName>Conversation</ContactName>
+                <ContactStatus>Loading...</ContactStatus>
+              </ContactDetails>
+            </>
+          )}
         </ContactInfo>
         
-        <InfoButton>
+        <InfoButton onClick={handleInfoClick}>
           <RiInformationLine />
         </InfoButton>
       </ChatHeader>
       
       <ChatContent>
-        <MessageList conversationId={conversationId} />
-        <MessageInput 
-          conversationId={conversationId}
-          recipientId={!isGroup ? conversation.id : null}
-          groupId={isGroup ? actualId : null}
-        />
+        {messagesLoading && !conversation ? (
+          <LoadingContainer>
+            <p>Loading conversation...</p>
+          </LoadingContainer>
+        ) : (
+          <>
+            <MessageList conversationId={conversationId} />
+            <MessageInput 
+              conversationId={conversationId}
+              recipientId={!isGroup && conversation ? conversation.id : null}
+              groupId={isGroup && conversation ? conversation.id : null}
+            />
+          </>
+        )}
       </ChatContent>
     </ChatContainer>
   );

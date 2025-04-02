@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiSearch, FiMessageSquare } from 'react-icons/fi';
+import { FiPlus, FiSearch, FiMessageSquare, FiUserPlus } from 'react-icons/fi';
 
 // Components
-import Card, { CardHeader, CardTitle, CardContent } from '../components/ui/Card';
+import Card, { CardHeader, CardTitle, CardContent, CardFooter } from '../components/ui/Card';
 import TextField from '../components/ui/TextField';
 import Button from '../components/ui/Button';
 import Avatar from '../components/ui/Avatar';
 
 // Store & Services
-import { fetchContacts, addContact } from '../store/slices/contactsSlice';
+import { fetchContacts, addContact, clearError } from '../store/slices/contactsSlice';
+import { setActiveConversation } from '../store/slices/messagesSlice';
 
 const ContactsContainer = styled.div`
   max-width: 800px;
@@ -116,9 +118,18 @@ const EmptyStateText = styled.p`
   max-width: 360px;
 `;
 
+const SuccessMessage = styled.div`
+  background-color: rgba(76, 175, 80, 0.1);
+  color: #4caf50;
+  padding: 10px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+`;
+
 const Contacts = () => {
   const dispatch = useDispatch();
-  const { contacts, loading } = useSelector((state) => state.contacts);
+  const navigate = useNavigate();
+  const { contacts, loading, error } = useSelector((state) => state.contacts);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -140,20 +151,48 @@ const Contacts = () => {
     try {
       setAddStatus({ loading: true, error: null, success: false });
       
-      await dispatch(addContact(newContactUsername)).unwrap();
+      await dispatch(addContact(newContactUsername.trim())).unwrap();
       
       setAddStatus({ loading: false, error: null, success: true });
       setNewContactUsername('');
-      setShowAddForm(false);
+      
+      // Reset success message after 3 seconds
+      setTimeout(() => {
+        setAddStatus(prev => ({ ...prev, success: false }));
+        setShowAddForm(false);
+      }, 3000);
       
     } catch (error) {
       setAddStatus({ 
         loading: false, 
-        error: error.message || 'Failed to add contact', 
+        error: error || 'Failed to add contact', 
         success: false 
       });
     }
   };
+  
+  const handleOpenChat = (contact) => {
+    if (!contact || !contact.id) return;
+    
+    const { user } = useSelector((state) => state.auth);
+    if (!user || !user.id) return;
+    
+    // Create conversation ID by sorting the IDs alphabetically
+    const conversationId = [user.id, contact.id].sort().join(':');
+    
+    // Set active conversation
+    dispatch(setActiveConversation(conversationId));
+    
+    // Navigate to chat
+    navigate(`/chat/${conversationId}`);
+  };
+  
+  // Clear any errors when unmounting
+  useEffect(() => {
+    return () => {
+      dispatch(clearError());
+    };
+  }, [dispatch]);
   
   return (
     <ContactsContainer>
@@ -178,14 +217,24 @@ const Contacts = () => {
               <CardTitle>Add New Contact</CardTitle>
             </CardHeader>
             <CardContent>
+              {addStatus.success && (
+                <SuccessMessage>
+                  Contact added successfully!
+                </SuccessMessage>
+              )}
+              
               <TextField
                 label="Username"
                 placeholder="Enter username to add"
                 value={newContactUsername}
-                onChange={(e) => setNewContactUsername(e.target.value)}
+                onChange={(e) => {
+                  setNewContactUsername(e.target.value);
+                  if (error) dispatch(clearError());
+                  if (addStatus.error) setAddStatus(prev => ({ ...prev, error: null }));
+                }}
                 fullWidth
-                error={!!addStatus.error}
-                helperText={addStatus.error}
+                error={!!error || !!addStatus.error}
+                helperText={error || addStatus.error}
               />
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
                 <Button
@@ -199,6 +248,7 @@ const Contacts = () => {
                   variant="contained"
                   onClick={handleAddContact}
                   disabled={addStatus.loading || !newContactUsername.trim()}
+                  startIcon={<FiUserPlus />}
                 >
                   {addStatus.loading ? 'Adding...' : 'Add Contact'}
                 </Button>
@@ -225,35 +275,35 @@ const Contacts = () => {
       ) : filteredContacts.length > 0 ? (
         <ContactsList>
           {filteredContacts.map(contact => (
-            <ContactCard key={contact.id || Math.random()} elevation={1}>
+            <ContactCard key={contact.id} elevation={1}>
               <ContactInfo>
                 <Avatar 
                   src={contact.avatar} 
                   name={contact.displayName || contact.username} 
-                  online={contact.online}
                 />
                 <ContactDetails>
                   <ContactName>{contact.displayName || contact.username}</ContactName>
                   <ContactStatus>
-                    {contact.online ? 'Online' : 'Offline'}
+                    {contact.status || 'Available'}
                   </ContactStatus>
                 </ContactDetails>
               </ContactInfo>
-              <ContactActions>
+              <CardFooter>
                 <Button
                   variant="outlined"
                   startIcon={<FiMessageSquare />}
+                  onClick={() => handleOpenChat(contact)}
                   fullWidth
                 >
                   Message
                 </Button>
-              </ContactActions>
+              </CardFooter>
             </ContactCard>
           ))}
         </ContactsList>
       ) : (
         <EmptyState>
-          <FiPlus size={48} style={{ opacity: 0.5 }} />
+          <FiUserPlus size={48} style={{ opacity: 0.5 }} />
           <EmptyStateText>
             {searchTerm ? 'No contacts matching your search' : 'You don\'t have any contacts yet'}
           </EmptyStateText>

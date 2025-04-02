@@ -20,26 +20,34 @@ export const fetchContacts = createAsyncThunk(
 
 export const addContact = createAsyncThunk(
   'contacts/addContact',
-  async (contactId, { rejectWithValue, getState }) => {
+  async (username, { rejectWithValue, getState }) => {
     try {
-      const response = await api.post('/users/contacts', { contactId }, {
+      const response = await api.post('/users/contacts', { username }, {
         headers: {
           Authorization: `Bearer ${getState().auth.token}`,
         },
       });
       
-      // After successfully adding, fetch the contact details
-      const contactResponse = await api.get(`/users/search?username=${contactId}`, {
-        headers: {
-          Authorization: `Bearer ${getState().auth.token}`,
-        },
-      });
-      
-      if (contactResponse.data.data.length > 0) {
-        return contactResponse.data.data[0];
+      // Return the contact data from the response if available
+      if (response.data && response.data.data) {
+        return response.data.data;
       }
       
-      return null;
+      // If no contact data in response, fetch the contact details
+      if (response.data.success) {
+        // Try to get contact info from search
+        const searchResponse = await api.get(`/users/search?username=${username}`, {
+          headers: {
+            Authorization: `Bearer ${getState().auth.token}`,
+          },
+        });
+        
+        if (searchResponse.data.data.length > 0) {
+          return searchResponse.data.data[0];
+        }
+      }
+      
+      throw new Error("Contact added but details not available");
     } catch (error) {
       return rejectWithValue(error.response?.data?.message || 'Failed to add contact');
     }

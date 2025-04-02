@@ -107,7 +107,7 @@ const storeUser = async (user) => {
   
   // Store username to ID mapping for lookups
   if (user.username) {
-    await redisClient.set(`username:${user.username}`, userId);
+    await redisClient.set(`username:${user.username.toLowerCase()}`, userId);
   }
   
   return userId;
@@ -119,6 +119,8 @@ const storeUser = async (user) => {
  * @returns {Promise<Object>} - User object
  */
 const getUserById = async (userId) => {
+  if (!userId) return null;
+  
   const userData = await redisClient.get(`users:${userId}`);
   return userData ? JSON.parse(userData) : null;
 };
@@ -129,7 +131,11 @@ const getUserById = async (userId) => {
  * @returns {Promise<Object>} - User object
  */
 const getUserByUsername = async (username) => {
-  const userId = await redisClient.get(`username:${username}`);
+  if (!username) return null;
+  
+  // Normalize username for case-insensitive lookup
+  const normalizedUsername = username.toLowerCase();
+  const userId = await redisClient.get(`username:${normalizedUsername}`);
   if (!userId) return null;
   
   return getUserById(userId);
@@ -141,6 +147,8 @@ const getUserByUsername = async (username) => {
  * @param {string} contactId - Contact ID
  */
 const addContact = async (userId, contactId) => {
+  if (!userId || !contactId) return;
+  
   await redisClient.sadd(`contacts:${userId}`, contactId);
 };
 
@@ -150,6 +158,8 @@ const addContact = async (userId, contactId) => {
  * @returns {Promise<Array>} - Array of contact IDs
  */
 const getUserContacts = async (userId) => {
+  if (!userId) return [];
+  
   return redisClient.smembers(`contacts:${userId}`);
 };
 
@@ -194,7 +204,7 @@ const getGroupById = async (groupId) => {
   
   // Get members
   const members = await redisClient.smembers(`group-members:${groupId}`);
-  group.members = members;
+  group.members = members || [];
   
   return group;
 };

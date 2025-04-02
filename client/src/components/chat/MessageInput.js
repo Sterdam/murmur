@@ -69,22 +69,32 @@ const IconButton = styled.button`
 
 const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
   const dispatch = useDispatch();
   
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (message.trim() === '') return;
+    if (message.trim() === '' || sending) return;
     
-    // Send message
-    dispatch(sendMessage({
-      message: message.trim(),
-      recipientId,
-      groupId,
-    }));
-    
-    // Clear input
-    setMessage('');
+    try {
+      setSending(true);
+      
+      // Send message
+      await dispatch(sendMessage({
+        message: message.trim(),
+        recipientId,
+        groupId,
+      })).unwrap();
+      
+      // Clear input
+      setMessage('');
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      // Could display an error toast here
+    } finally {
+      setSending(false);
+    }
   };
   
   const handleKeyDown = (e) => {
@@ -108,6 +118,7 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
           rows={1}
+          disabled={sending}
         />
         
         <IconButton type="button" title="Add emoji">
@@ -117,7 +128,7 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
         <IconButton 
           type="submit" 
           primary 
-          disabled={message.trim() === ''}
+          disabled={message.trim() === '' || sending}
           title="Send message"
         >
           <RiSendPlaneFill />

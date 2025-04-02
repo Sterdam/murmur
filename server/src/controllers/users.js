@@ -144,17 +144,24 @@ exports.searchUsers = async (req, res, next) => {
 exports.addContact = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { contactId } = req.body;
+    const { contactId, username } = req.body;
     
-    if (!contactId) {
+    if (!contactId && !username) {
       return res.status(400).json({
         success: false,
-        message: 'Contact ID is required',
+        message: 'Either contactId or username is required',
       });
     }
     
-    // Check if contact exists
-    const contactUser = await getUserById(contactId);
+    let contactUser;
+    
+    // Check if we're adding by ID or username
+    if (contactId) {
+      contactUser = await getUserById(contactId);
+    } else if (username) {
+      contactUser = await getUserByUsername(username);
+    }
+    
     if (!contactUser) {
       return res.status(404).json({
         success: false,
@@ -162,12 +169,24 @@ exports.addContact = async (req, res, next) => {
       });
     }
     
+    // Don't allow adding yourself as a contact
+    if (contactUser.id === userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot add yourself as a contact',
+      });
+    }
+    
     // Add contact
-    await addContact(userId, contactId);
+    await addContact(userId, contactUser.id);
+    
+    // Return the contact info
+    const { password, ...contactInfo } = contactUser;
     
     res.status(200).json({
       success: true,
       message: 'Contact added successfully',
+      data: contactInfo
     });
   } catch (error) {
     next(error);
