@@ -33,13 +33,41 @@ export const fetchConversationMessages = createAsyncThunk(
         return rejectWithValue('ID de conversation manquant');
       }
       
+      // Vérifier si nous sommes déjà en train de charger cette conversation
+      const state = getState();
+      if (state.messages.loading) {
+        console.log(`Skipping fetchConversationMessages - loading in progress`);
+        // Retourner les messages actuels plutôt que de déclencher une nouvelle requête
+        const normalizedId = normalizeConversationId(conversationId);
+            
+        return {
+          conversationId: normalizedId,
+          messages: state.messages.conversations[normalizedId] || [],
+        };
+      }
+      
       console.log(`Fetching messages for conversation: ${conversationId}`);
       
       // Normaliser l'ID de conversation
       const normalizedId = normalizeConversationId(conversationId);
       
       // Vérifier si on a déjà des messages pour cette conversation
-      const existingMessages = getState().messages.conversations[normalizedId] || [];
+      const existingMessages = state.messages.conversations[normalizedId] || [];
+      
+      // Ajouter un délai entre les requêtes pour éviter de surcharger le serveur
+      const lastFetchTime = state.messages.lastFetchTime || 0;
+      const now = Date.now();
+      const timeSinceLastFetch = now - lastFetchTime;
+      
+      // Si moins de 2 secondes se sont écoulées depuis la dernière requête et que nous avons des messages
+      // retourner les messages existants plutôt que de faire une nouvelle requête
+      if (timeSinceLastFetch < 2000 && existingMessages.length > 0) {
+        console.log(`Using cached messages - too soon since last fetch (${timeSinceLastFetch}ms)`);
+        return {
+          conversationId: normalizedId,
+          messages: existingMessages,
+        };
+      }
       
       try {
         const response = await api.get(`/messages/${normalizedId}`);
@@ -53,8 +81,8 @@ export const fetchConversationMessages = createAsyncThunk(
         console.log(`Received ${messages.length} messages from API for conversation: ${normalizedId}`);
         
         // État courant et clés de déchiffrement
-        const currentUser = getState().auth.user;
-        const privateKey = getState().auth.privateKey;
+        const currentUser = state.auth.user;
+        const privateKey = state.auth.privateKey;
         
         if (!privateKey) {
           console.warn('Private key not available for decryption');
@@ -123,6 +151,7 @@ export const fetchConversationMessages = createAsyncThunk(
         return {
           conversationId: normalizedId,
           messages: validMessages,
+          lastFetchTime: Date.now(),
         };
       } catch (error) {
         // Cas d'erreur 429 (trop de requêtes)
@@ -368,6 +397,8 @@ const initialState = {
   activeConversation: null,
   loading: false,
   error: null,
+  lastFetchTime: 0, // Pour suivre la dernière fois qu'une requête a été faite
+  fetchCount: 0,    // Pour suivre le nombre de requêtes
 };
 
 const messagesSlice = createSlice({
@@ -495,7 +526,17 @@ const messagesSlice = createSlice({
           // Mettre à jour la conversation
           state.conversations[conversationId] = mergedMessages;
           
-          console.log(`Updated messages for conversation ${conversationId}, count: ${mergedMessages.length}`);
+          // Mettre à jour le temps de dernière requête
+          if (action.payload.lastFetchTime) {
+            state.lastFetchTime = action.payload.lastFetchTime;
+          } else {
+            state.lastFetchTime = Date.now();
+          }
+          
+          // Incrémenter le compteur de requêtes
+          state.fetchCount += 1;
+          
+          console.log(`Updated messages for conversation ${conversationId}, count: ${mergedMessages.length}, total fetches: ${state.fetchCount}`);
         } else {
           console.error('Invalid payload format in fetchConversationMessages.fulfilled:', action.payload);
         }

@@ -2,7 +2,8 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
-import { RiArrowLeftSLine, RiInformationLine, RiAlertCircleLine } from 'react-icons/ri';
+import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
+import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
 import { fetchConversationMessages, setActiveConversation } from '../store/slices/messagesSlice';
@@ -344,21 +345,14 @@ const Chat = () => {
     // Définir la conversation active dans Redux
     dispatch(setActiveConversation(normalizedId));
     
-    // Charger les messages avec gestion d'erreur
-    if (!messagesLoading) {
-      dispatch(fetchConversationMessages(normalizedId))
-        .unwrap()
-        .catch(err => {
-          console.error('Failed to fetch messages:', err);
-          setError(err);
-        });
-    }
+    // IMPORTANT: Nous ne chargeons pas les messages ici,
+    // car le composant MessageList s'en chargera
     
     return () => {
       // Effacer la conversation active au démontage
       dispatch(setActiveConversation(null));
     };
-  }, [conversationId, dispatch, groups, contacts, user, normalizeConversationId, groupsLoading, contactsLoading, messagesLoading]);
+  }, [conversationId, dispatch, groups, contacts, user, normalizeConversationId, groupsLoading, contactsLoading]); // Retiré messagesLoading des dépendances
   
   // Mettre à jour l'erreur si une erreur Redux est détectée
   useEffect(() => {
@@ -404,7 +398,7 @@ const Chat = () => {
         </ChatHeader>
         
         <ErrorContainer>
-          <RiAlertCircleLine />
+          <FiAlertCircle />
           <h3>{errorMessage}</h3>
           <p>{errorDetails}</p>
           <StyledButton onClick={handleBack}>

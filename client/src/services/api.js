@@ -102,62 +102,69 @@ api.interceptors.response.use(
   }
 );
 
-// Intercepteur de requête pour mettre en cache les réponses GET
+// Intercepteur de requête pour la gestion du cache - CORRIGÉ
 api.interceptors.request.use(
-  async (config) => {
-    try {
-      // S'assurer que config existe et qu'il contient method
-      if (!config || !config.method) {
-        console.error('Invalid API request config:', config);
-        return config || {};
-      }
+  (config) => {
+    // S'assurer que config existe et qu'il contient method
+    if (!config || !config.method) {
+      console.error('Invalid API request config:', config);
+      return config || {};
+    }
+    
+    // Si c'est une requête GET, vérifier le cache
+    if (config.method.toLowerCase() === 'get' && config.url) {
+      const cacheKey = config.url;
+      const now = Date.now();
       
-      // Si c'est une requête GET, vérifier si elle n'a pas déjà été faite récemment
-      if (config.method.toLowerCase() === 'get') {
-        const cacheKey = config.url;
-        if (!cacheKey) return config;
+      // Vérifier si la requête est dans le cache et encore fraîche
+      if (requestCache.has(cacheKey)) {
+        const { timestamp, response } = requestCache.get(cacheKey);
         
-        const now = Date.now();
-        
-        // Vérifier si la requête est dans le cache et encore fraîche
-        if (requestCache.has(cacheKey)) {
-          const { timestamp, data } = requestCache.get(cacheKey);
+        // Si le cache est encore valide (moins de X secondes)
+        if (now - timestamp < CACHE_TTL) {
+          console.log('Found response in cache for', cacheKey);
           
-          // Si le cache est encore valide (moins de X secondes)
-          if (now - timestamp < CACHE_TTL) {
-            console.log('Using cached response for', cacheKey);
-            return Promise.resolve(data);
-          }
+          // Marquer cette config comme devant utiliser une réponse en cache
+          // au lieu de faire une vraie requête
+          config.adapter = (config) => {
+            return Promise.resolve({
+              data: response.data,
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers,
+              config: config,
+              request: {}
+            });
+          };
         }
       }
-      
-      return config;
-    } catch (error) {
-      console.error('Error in request interceptor:', error);
-      // En cas d'erreur, continuer avec la configuration originale
-      return config;
     }
+    
+    return config;
   },
   (error) => {
     return Promise.reject(error);
   }
 );
 
-// Intercepteur de réponse pour mettre à jour le cache
+// Intercepteur de réponse pour mettre à jour le cache - CORRIGÉ
 api.interceptors.response.use(
   (response) => {
     // S'assurer que response et response.config existent
-    if (!response || !response.config || !response.config.method) {
-      return response;
-    }
-    
-    // Mettre en cache les réponses GET réussies
-    if (response.config.method.toLowerCase() === 'get' && response.config.url) {
-      const cacheKey = response.config.url;
-      requestCache.set(cacheKey, {
-        timestamp: Date.now(),
-        data: response
-      });
+    if (response && response.config && response.config.method) {
+      // Mettre en cache les réponses GET réussies
+      if (response.config.method.toLowerCase() === 'get' && response.config.url) {
+        const cacheKey = response.config.url;
+        requestCache.set(cacheKey, {
+          timestamp: Date.now(),
+          response: {
+            data: response.data,
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers
+          }
+        });
+      }
     }
     return response;
   },

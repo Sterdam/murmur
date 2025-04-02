@@ -46,6 +46,7 @@ const App = () => {
   const { groups } = useSelector((state) => state.groups);
   const dispatch = useDispatch();
   const [initialized, setInitialized] = useState(false);
+  const [socketConnected, setSocketConnected] = useState(false);
 
   // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
   const handlePrivateMessage = useCallback(async (data) => {
@@ -86,7 +87,7 @@ const App = () => {
         }
       } catch (decryptError) {
         console.error('Failed to decrypt received message:', decryptError);
-        messageText = '[Encrypted message - Cannot decrypt]';
+        messageText = '[Message chiffré - Impossible de déchiffrer]';
       }
       
       // Dispatch l'action pour ajouter le message
@@ -95,6 +96,8 @@ const App = () => {
           ...data,
           message: messageText,
           conversationId,
+          id: data.id || Date.now().toString(),
+          timestamp: data.timestamp || Date.now()
         },
       }));
       
@@ -147,7 +150,7 @@ const App = () => {
         }
       } catch (decryptError) {
         console.error('Failed to decrypt received group message:', decryptError);
-        messageText = '[Encrypted message - Cannot decrypt]';
+        messageText = '[Message chiffré - Impossible de déchiffrer]';
       }
       
       // Dispatch l'action pour ajouter le message
@@ -156,6 +159,8 @@ const App = () => {
           ...data,
           message: messageText,
           conversationId,
+          id: data.id || Date.now().toString(),
+          timestamp: data.timestamp || Date.now()
         },
       }));
       
@@ -172,7 +177,7 @@ const App = () => {
   
   const handleMessageDelivery = useCallback((data) => {
     try {
-      if (!user || !user.id || !data.recipientId) {
+      if (!user || !user.id || !data || !data.recipientId) {
         return;
       }
       
@@ -189,7 +194,10 @@ const App = () => {
   }, [dispatch, user]);
   
   // Gestionnaire d'indicateur de frappe (simple placeholder)
-  const handleTypingIndicator = useCallback(() => {}, []);
+  const handleTypingIndicator = useCallback((data) => {
+    // Implémentation simplifiée - vous pourriez ajouter une action Redux pour afficher un indicateur de frappe
+    console.log('Typing indicator received:', data);
+  }, []);
   
   // Fonction utilitaire pour afficher des notifications
   const showNotification = (title, body) => {
@@ -224,6 +232,7 @@ const App = () => {
           // Connecter le socket avec le token
           if (socketService.connect(token)) {
             console.log("Socket connected, setting up handlers");
+            setSocketConnected(true);
             
             // Configurer les gestionnaires de messages
             socketService.setupEventHandlers(
@@ -238,6 +247,8 @@ const App = () => {
               socketService.joinGroups(groups);
             }
           }
+        } else {
+          setSocketConnected(false);
         }
       } catch (error) {
         console.error("Error initializing app:", error);
@@ -252,6 +263,7 @@ const App = () => {
     return () => {
       if (socketService.isConnected()) {
         socketService.disconnect();
+        setSocketConnected(false);
       }
     };
   }, [
@@ -265,8 +277,16 @@ const App = () => {
     handleTypingIndicator
   ]);
 
+  // Effet pour reconnecter le socket si les groupes changent
+  useEffect(() => {
+    if (socketConnected && groups && groups.length > 0) {
+      // Rejoindre tous les nouveaux groupes
+      socketService.joinGroups(groups);
+    }
+  }, [groups, socketConnected]);
+
   if (!initialized) {
-    // Afficher un écran de chargement si nécessaire
+    // Afficher un écran de chargement
     return (
       <div style={{ 
         display: 'flex', 

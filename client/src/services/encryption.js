@@ -195,6 +195,8 @@ export const encryptMessage = async (message, recipientPublicKeyJson) => {
  * @param {string} encryptedMessageBase64 - Message chiffré en Base64
  * @param {string} encryptedKeyBase64 - Clé chiffrée en Base64
  * @param {string} privateKeyJson - Clé privée du destinataire (JSON)
+ * @param {string} senderPublicKeyJson - Clé publique de l'expéditeur (JSON)
+ * @param {string} signature - Signature numérique (optionnelle)
  * @param {string} metadataJson - Métadonnées de chiffrement (JSON)
  * @returns {Promise<string>} - Message déchiffré
  */
@@ -207,8 +209,9 @@ export const decryptMessage = async (
   metadataJson = '{}'
 ) => {
   try {
-    if (!privateKeyJson) {
-      throw new Error('Clé privée non disponible');
+    // Vérifier les entrées
+    if (!encryptedMessageBase64 || !encryptedKeyBase64 || !privateKeyJson) {
+      throw new Error('Paramètres de déchiffrement manquants');
     }
     
     const crypto = window.crypto;

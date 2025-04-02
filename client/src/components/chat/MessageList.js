@@ -196,6 +196,7 @@ const MessageList = ({ conversationId }) => {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const [oldScrollHeight, setOldScrollHeight] = useState(0);
+  const [lastLoadTime, setLastLoadTime] = useState(0);
   
   // Fonction memoïsée pour normaliser les IDs de conversation
   const getNormalizedId = useCallback((id) => {
@@ -234,34 +235,72 @@ const MessageList = ({ conversationId }) => {
     setLocalError(null);
     setIsInitialLoad(true);
     
+    // Référence pour savoir si le composant est monté
+    const isMounted = { current: true };
+    
     // Fonction pour charger les messages
     const loadMessages = async () => {
+      // Vérifier s'il n'est pas trop tôt pour recharger
+      const now = Date.now();
+      if (now - lastLoadTime < 2000 && messages.length > 0) {
+        console.log(`Skip loading messages: throttled (last load ${now - lastLoadTime}ms ago)`);
+        return;
+      }
+      
+      // Vérifier si on a une requête en cours pour éviter les doublons
+      if (loading) {
+        console.log('Skip loading messages: already in progress');
+        return;
+      }
+      
       try {
+        console.log(`Loading messages for conversation: ${conversationId}`);
         await dispatch(fetchConversationMessages(conversationId)).unwrap();
-        setIsInitialLoad(false);
+        
+        // Mettre à jour le dernier temps de chargement
+        setLastLoadTime(Date.now());
+        
+        // Vérifier si le composant est toujours monté avant de mettre à jour l'état
+        if (isMounted.current) {
+          setIsInitialLoad(false);
+        }
       } catch (err) {
         console.error('Failed to fetch messages:', err);
-        setLocalError(err);
-        setIsInitialLoad(false);
+        
+        // Vérifier si le composant est toujours monté avant de mettre à jour l'état
+        if (isMounted.current) {
+          setLocalError(err);
+          setIsInitialLoad(false);
+        }
       }
     };
     
-    // Charger les messages initialement
-    loadMessages();
+    // Charger les messages initialement avec un léger délai
+    // pour éviter les requêtes simultanées lors de la navigation
+    const initialLoadTimer = setTimeout(() => {
+      loadMessages();
+    }, 300);
     
-    // Configurer un intervalle pour rafraîchir périodiquement (toutes les 60 secondes)
+    // Configurer un intervalle pour rafraîchir périodiquement mais moins fréquemment
+    // 2 minutes au lieu de 1 minute pour réduire la charge serveur
     const intervalId = setInterval(() => {
-      loadMessages().catch(err => {
-        console.warn('Background message refresh failed:', err);
-        // Ne pas mettre à jour l'erreur pour les rafraîchissements en arrière-plan
-      });
-    }, 60000);
+      // Ne pas rafraîchir si le composant n'est pas visible (onglet en arrière-plan)
+      if (!document.hidden) {
+        console.log('Refreshing messages in background');
+        loadMessages().catch(err => {
+          console.warn('Background message refresh failed:', err);
+        });
+      }
+    }, 120000); // 2 minutes
     
+    // Nettoyage à la suppression du composant
     return () => {
+      clearTimeout(initialLoadTimer);
       clearInterval(intervalId);
+      isMounted.current = false;
       setLocalError(null);
     };
-  }, [conversationId, dispatch]);
+  }, [conversationId, dispatch]); // Dépendances minimales!
   
   // Surveiller les changements dans les messages pour détecter les nouveaux messages
   useEffect(() => {
@@ -292,6 +331,7 @@ const MessageList = ({ conversationId }) => {
     setLocalError(null);
     try {
       await dispatch(fetchConversationMessages(conversationId)).unwrap();
+      setLastLoadTime(Date.now());
     } catch (err) {
       console.error('Retry failed:', err);
       setLocalError(err);
