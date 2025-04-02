@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import styled from 'styled-components';
-import { fetchConversationMessages, normalizeConversationId, markConversationAsRead } from '../../store/slices/messagesSlice';
+import { fetchConversationMessages, markConversationAsRead } from '../../store/slices/messagesSlice';
 import { FiAlertCircle, FiRefreshCw, FiLock, FiChevronDown } from 'react-icons/fi';
 
 // Components
@@ -63,13 +63,11 @@ const MessageContent = styled.div`
     border-top-left-radius: ${({ sent }) => (sent ? 18 : 4)}px;
   }
   
-  /* Style pour les messages chiffrés qu'on ne peut pas déchiffrer */
   ${({ encrypted }) => encrypted && `
     font-style: italic;
     opacity: 0.9;
   `}
   
-  /* Icône de cadenas pour les messages chiffrés sécurisés */
   ${({ secure }) => secure && `
     &::after {
       content: '';
@@ -260,18 +258,16 @@ const EncryptionNote = styled.div`
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
-  const { loading, error, loadingConversationId } = useSelector((state) => state.messages);
+  const { loading, error, conversations, loadingConversationId } = useSelector((state) => state.messages);
   
-  // Normaliser l'ID de conversation pour la cohérence
-  const normalizedId = normalizeConversationId(conversationId);
-  
-  // Obtenir les messages en utilisant l'ID normalisé
+  // Get messages for this conversation
   const messages = useSelector((state) => {
-    return state.messages.conversations[normalizedId] || [];
+    return state.messages.conversations[conversationId] || [];
   });
   
   const listContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const loadingRef = useRef(false);
   const [localError, setLocalError] = useState(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -280,50 +276,44 @@ const MessageList = ({ conversationId }) => {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasInitiallyLoaded, setHasInitiallyLoaded] = useState(false);
   
-  // CORRECTION: Flag pour éviter les chargements en boucle
-  const loadingRef = useRef(false);
-  
-  // CORRECTION: Effet de chargement initial amélioré
+  // Initial load of messages
   useEffect(() => {
-    if (!conversationId || !normalizedId || loadingRef.current) return;
+    if (!conversationId || loadingRef.current) return;
     
-    // Nettoyer les erreurs précédentes
-    setLocalError(null);
-    
+    // Function to load messages
     const loadMessages = async () => {
-      // Éviter les chargements simultanés
       if (loadingRef.current) return;
-      loadingRef.current = true;
       
       try {
-        console.log(`[MessageList] Initial loading for: ${normalizedId}`);
+        console.log(`Loading messages for conversation: ${conversationId}`);
+        loadingRef.current = true;
         setIsLoadingMore(true);
         
-        await dispatch(fetchConversationMessages(normalizedId)).unwrap();
+        // Dispatch the fetch action with unwrap to catch errors
+        await dispatch(fetchConversationMessages(conversationId)).unwrap();
         
         setIsInitialLoad(false);
         setHasInitiallyLoaded(true);
         setLastLoadTime(Date.now());
-        setIsLoadingMore(false);
         
-        // Marquer comme lu après chargement initial
+        // Mark as read after initial load
         if (user?.id) {
           dispatch(markConversationAsRead({
-            conversationId: normalizedId,
+            conversationId,
             userId: user.id
           }));
         }
       } catch (err) {
-        console.error('[MessageList] Error loading messages:', err);
+        console.error('Error loading messages:', err);
         setLocalError(err);
         setIsInitialLoad(false);
-        setIsLoadingMore(false);
       } finally {
+        setIsLoadingMore(false);
         loadingRef.current = false;
       }
     };
     
-    // Utiliser un timeout pour éviter les chargements trop rapprochés
+    // Use a small timeout to avoid rapid loading
     const timer = setTimeout(() => {
       loadMessages();
     }, 300);
@@ -331,15 +321,14 @@ const MessageList = ({ conversationId }) => {
     return () => {
       clearTimeout(timer);
     };
-  }, [normalizedId, dispatch, user?.id]);
+  }, [conversationId, dispatch, user?.id]);
   
-  // CORRECTION: Effet séparé pour les rafraîchissements périodiques
+  // Periodic refresh of messages
   useEffect(() => {
-    if (!normalizedId || !hasInitiallyLoaded) return;
+    if (!conversationId || !hasInitiallyLoaded) return;
     
-    // Configurer l'intervalle de rafraîchissement
     const intervalId = setInterval(() => {
-      // Ne pas rafraîchir si l'onglet est en arrière-plan, si un chargement est en cours, ou si le délai est trop court
+      // Don't refresh if tab is in background or if loading is in progress
       if (document.hidden || loadingRef.current || Date.now() - lastLoadTime < 10000) {
         return;
       }
@@ -349,94 +338,93 @@ const MessageList = ({ conversationId }) => {
         loadingRef.current = true;
         
         try {
-          console.log('[MessageList] Background refresh');
-          await dispatch(fetchConversationMessages(normalizedId)).unwrap();
+          console.log('Refreshing messages...');
+          await dispatch(fetchConversationMessages(conversationId)).unwrap();
           setLastLoadTime(Date.now());
         } catch (err) {
-          console.warn('[MessageList] Background refresh failed:', err);
+          console.warn('Background refresh failed:', err);
         } finally {
           loadingRef.current = false;
         }
       };
       
       refreshMessages();
-    }, 30000); // Rafraîchir toutes les 30 secondes
+    }, 15000); // Refresh every 15 seconds
     
     return () => {
       clearInterval(intervalId);
     };
-  }, [normalizedId, hasInitiallyLoaded, lastLoadTime, dispatch]);
+  }, [conversationId, hasInitiallyLoaded, lastLoadTime, dispatch]);
   
-  // Surveiller les changements dans les messages pour détecter les nouveaux messages
+  // Scroll to bottom when new messages arrive
   useEffect(() => {
     if (listContainerRef.current && messages.length > 0) {
       const { scrollTop, scrollHeight, clientHeight } = listContainerRef.current;
       const atBottom = scrollHeight - scrollTop - clientHeight < 50;
       
-      // Si nous sommes en bas ou c'est le chargement initial, faire défiler vers le bas
+      // If we're at the bottom or it's the initial load, scroll to bottom
       if (atBottom || isInitialLoad) {
-        // Utiliser un timeout pour s'assurer que le DOM est mis à jour
+        // Use a small timeout to ensure the DOM is updated
         setTimeout(() => {
           if (messagesEndRef.current) {
             messagesEndRef.current.scrollIntoView({ behavior: isInitialLoad ? 'auto' : 'smooth' });
           }
         }, 100);
         
-        // Si on était en bas et il y a de nouveaux messages, marquer comme lus
+        // If at bottom and new messages, mark as read
         if (messages.length > 0 && user?.id) {
           dispatch(markConversationAsRead({
-            conversationId: normalizedId,
+            conversationId,
             userId: user.id
           }));
         }
       } else if (scrollHeight > oldScrollHeight && oldScrollHeight > 0) {
-        // Si de nouveaux messages sont arrivés mais nous ne sommes pas en bas
+        // If new messages arrived but we're not at the bottom
         setHasNewMessages(true);
       }
       
-      // Enregistrer la hauteur de défilement actuelle pour la comparaison
+      // Save current scroll height for comparison
       setOldScrollHeight(scrollHeight);
     }
-  }, [messages, isInitialLoad, oldScrollHeight, normalizedId, dispatch, user?.id]);
+  }, [messages, isInitialLoad, oldScrollHeight, conversationId, dispatch, user?.id]);
   
-  // Fonction pour réessayer de charger les messages en cas d'erreur
+  // Retry loading messages
   const handleRetry = async () => {
     if (loadingRef.current) return;
-    loadingRef.current = true;
     
     setLocalError(null);
     setIsLoadingMore(true);
+    loadingRef.current = true;
     
     try {
-      await dispatch(fetchConversationMessages(normalizedId)).unwrap();
+      await dispatch(fetchConversationMessages(conversationId)).unwrap();
       setLastLoadTime(Date.now());
-      setIsLoadingMore(false);
     } catch (err) {
-      console.error('[MessageList] Retry failed:', err);
+      console.error('Retry failed:', err);
       setLocalError(err);
-      setIsLoadingMore(false);
     } finally {
+      setIsLoadingMore(false);
       loadingRef.current = false;
     }
   };
   
-  // Fonction pour faire défiler jusqu'aux nouveaux messages
+  // Scroll to new messages
   const scrollToBottom = () => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
       setHasNewMessages(false);
       
-      // Marquer comme lus quand on descend manuellement
+      // Mark as read when manually scrolling down
       if (user?.id) {
         dispatch(markConversationAsRead({
-          conversationId: normalizedId,
+          conversationId,
           userId: user.id
         }));
       }
     }
   };
   
-  // Formatter les dates
+  // Format date for display
   const formatDate = (dateString) => {
     try {
       const date = new Date(dateString);
@@ -465,7 +453,7 @@ const MessageList = ({ conversationId }) => {
     }
   };
   
-  // Formater l'heure
+  // Format time for display
   const formatTime = (timestamp) => {
     try {
       if (!timestamp) return '';
@@ -485,7 +473,7 @@ const MessageList = ({ conversationId }) => {
     }
   };
   
-  // Vérifier si un message contient une indication de chiffrement échoué
+  // Check if message indicates encryption failure
   const isEncryptedMessage = (message) => {
     if (!message) return false;
     
@@ -499,21 +487,20 @@ const MessageList = ({ conversationId }) => {
     return false;
   };
   
-  // Gérer le scroll vers le haut pour charger plus de messages (pagination)
+  // Handle scroll to top to load more messages
   const handleScroll = useCallback(() => {
     if (!listContainerRef.current) return;
     
     const { scrollTop } = listContainerRef.current;
     
-    // Si on est au début de la liste et il y a déjà des messages, charger plus
+    // If at the top of the list and there are already messages, load more
     if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore && !loadingRef.current) {
-      // Ici on pourrait implémenter la pagination pour charger les messages plus anciens
-      console.log('[MessageList] Top of chat reached, could load older messages');
+      console.log('Top of chat reached, loading older messages');
       handleRetry();
     }
   }, [loading, isLoadingMore, messages.length]);
   
-  // Ajouter l'écouteur d'événement de scroll
+  // Add scroll event listener
   useEffect(() => {
     const listContainer = listContainerRef.current;
     if (listContainer) {
@@ -525,11 +512,10 @@ const MessageList = ({ conversationId }) => {
     }
   }, [handleScroll]);
   
-  // Afficher un état d'erreur
+  // Show error state
   if (localError || error) {
     const errorMessage = localError || error;
     
-    // Erreur d'accès non autorisé
     if (typeof errorMessage === 'string' && errorMessage.includes('Unauthorized access')) {
       return (
         <ErrorState>
@@ -547,7 +533,6 @@ const MessageList = ({ conversationId }) => {
       );
     }
     
-    // Autres erreurs
     return (
       <ErrorState>
         <FiAlertCircle size={40} />
@@ -561,7 +546,7 @@ const MessageList = ({ conversationId }) => {
     );
   }
   
-  // Afficher un état de chargement pour le chargement initial
+  // Show loading state for initial load
   if (isInitialLoad && messages.length === 0) {
     return (
       <EmptyState>
@@ -574,7 +559,7 @@ const MessageList = ({ conversationId }) => {
     );
   }
   
-  // Afficher un état vide si aucun message
+  // Show empty state if no messages
   if (!isInitialLoad && messages.length === 0) {
     return (
       <EmptyState>
@@ -588,7 +573,7 @@ const MessageList = ({ conversationId }) => {
     );
   }
   
-  // Grouper les messages par date avec gestion d'erreur robuste
+  // Group messages by date
   const groupedMessages = messages.reduce((groups, message) => {
     if (!message) return groups;
     
@@ -596,7 +581,7 @@ const MessageList = ({ conversationId }) => {
       const timestamp = message.timestamp || Date.now();
       const date = new Date(timestamp);
       
-      // Vérifier que la date est valide
+      // Check if date is valid
       if (isNaN(date.getTime())) {
         console.warn('Invalid timestamp in message:', message);
         const fallbackDate = new Date().toDateString();
@@ -614,7 +599,7 @@ const MessageList = ({ conversationId }) => {
       groups[dateString].push(message);
     } catch (error) {
       console.error('Error grouping message by date:', error, message);
-      // Utiliser une date de fallback pour les messages problématiques
+      // Use fallback date for problematic messages
       const fallbackDate = 'Unknown Date';
       if (!groups[fallbackDate]) {
         groups[fallbackDate] = [];
@@ -627,7 +612,7 @@ const MessageList = ({ conversationId }) => {
   
   return (
     <ListContainer ref={listContainerRef}>
-      {/* Indicateur de chargement pour le chargement de messages plus anciens */}
+      {/* Loading indicator for fetching older messages */}
       {isLoadingMore && (
         <LoadingIndicator style={{ padding: '10px 0' }}>
           <FiRefreshCw size={20} />
@@ -635,7 +620,7 @@ const MessageList = ({ conversationId }) => {
         </LoadingIndicator>
       )}
       
-      {/* Bouton pour défiler jusqu'aux nouveaux messages */}
+      {/* Button to scroll to new messages */}
       {hasNewMessages && (
         <NewMessagesButton onClick={scrollToBottom}>
           Nouveaux messages
@@ -643,7 +628,7 @@ const MessageList = ({ conversationId }) => {
         </NewMessagesButton>
       )}
       
-      {/* Rendu des messages groupés par date */}
+      {/* Render messages grouped by date */}
       {Object.keys(groupedMessages).map((date) => (
         <React.Fragment key={date}>
           <DateDivider>
@@ -683,7 +668,7 @@ const MessageList = ({ conversationId }) => {
         </React.Fragment>
       ))}
       
-      {/* Indicateur de chargement pour les rafraîchissements non initiaux */}
+      {/* Loading indicator for non-initial refreshes */}
       {loading && !isInitialLoad && !isLoadingMore && (
         <LoadingIndicator style={{ 
           position: 'absolute', 

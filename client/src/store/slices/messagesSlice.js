@@ -13,7 +13,7 @@ export const normalizeConversationId = (id) => {
   // Si c'est un ID de groupe, le laisser tel quel
   if (typeof id === 'string' && id.startsWith('group:')) return id;
   
-  // Si c'est un ID direct, trier les parties
+  // Si c'est un ID direct au format "id1:id2", trier les parties pour consistance
   if (typeof id === 'string' && id.includes(':')) {
     const parts = id.split(':').filter(Boolean);
     if (parts.length === 2) {
@@ -21,7 +21,7 @@ export const normalizeConversationId = (id) => {
     }
   }
   
-  // Format inconnu, retourner tel quel
+  // Si c'est un UUID ou autre format non reconnu, le retourner tel quel
   return id;
 };
 
@@ -38,34 +38,11 @@ export const fetchConversationMessages = createAsyncThunk(
       const normalizedId = normalizeConversationId(conversationId);
       console.log(`Fetching messages for: ${conversationId} → normalized to: ${normalizedId}`);
       
-      // Vérifier si nous sommes déjà en train de charger cette conversation
+      // Éviter les requêtes multiples simultanées pour la même conversation
       const state = getState();
-      if (state.messages.loading && state.messages.loadingConversationId === normalizedId) {
-        console.log(`Skipping fetchConversationMessages - loading in progress for ${normalizedId}`);
-        // Retourner les messages actuels plutôt que de déclencher une nouvelle requête
-        return {
-          conversationId: normalizedId,
-          messages: state.messages.conversations[normalizedId] || [],
-        };
-      }
       
       // Vérifier si on a déjà des messages pour cette conversation
       const existingMessages = state.messages.conversations[normalizedId] || [];
-      
-      // Ajouter un délai entre les requêtes pour éviter de surcharger le serveur
-      const lastFetchTime = state.messages.lastFetchTime || 0;
-      const now = Date.now();
-      const timeSinceLastFetch = now - lastFetchTime;
-      
-      // Si moins de 2 secondes se sont écoulées depuis la dernière requête et que nous avons des messages
-      // retourner les messages existants plutôt que de faire une nouvelle requête
-      if (timeSinceLastFetch < 2000 && existingMessages.length > 0) {
-        console.log(`Using cached messages - too soon since last fetch (${timeSinceLastFetch}ms)`);
-        return {
-          conversationId: normalizedId,
-          messages: existingMessages,
-        };
-      }
       
       try {
         // Utiliser l'ID normalisé pour l'API
@@ -90,7 +67,7 @@ export const fetchConversationMessages = createAsyncThunk(
           console.warn('Private key not available for decryption');
         }
         
-        // Déchiffrer les messages avec gestion d'erreur robuste
+        // Déchiffrer les messages
         const decryptedMessages = await Promise.all(
           messages.map(async (message) => {
             // Validation de base
@@ -466,8 +443,7 @@ const messagesSlice = createSlice({
         state.conversations[conversationId] = [];
       }
       
-      // CORRECTION: Vérifier si le message existe déjà pour éviter les doublons
-      // Utiliser une comparaison plus stricte
+      // Vérifier si le message existe déjà pour éviter les doublons
       const existingMessageIndex = state.conversations[conversationId].findIndex(
         (msg) => msg.id === message.id
       );
@@ -485,8 +461,11 @@ const messagesSlice = createSlice({
         
         console.log(`Message added to conversation ${conversationId}, ID: ${message.id}`);
       } else {
-        // Le message existe déjà, ne rien faire
-        console.log(`Message ${message.id} already exists in conversation ${conversationId}`);
+        // Le message existe déjà, mise à jour si nécessaire
+        state.conversations[conversationId][existingMessageIndex] = {
+          ...state.conversations[conversationId][existingMessageIndex],
+          ...message
+        };
       }
     },
     updateMessageStatus: (state, action) => {
@@ -529,11 +508,13 @@ const messagesSlice = createSlice({
       state.error = null;
     },
     markConversationAsRead: (state, action) => {
-      const conversationId = normalizeConversationId(action.payload.conversationId);
-      const userId = action.payload.userId;
+      const { conversationId, userId } = action.payload;
+      if (!conversationId || !userId) return;
       
-      if (state.conversations[conversationId] && userId) {
-        state.conversations[conversationId].forEach(message => {
+      const normalizedId = normalizeConversationId(conversationId);
+      
+      if (state.conversations[normalizedId]) {
+        state.conversations[normalizedId].forEach(message => {
           if (!message.isRead && message.senderId !== userId) {
             message.isRead = true;
           }
@@ -584,7 +565,7 @@ const messagesSlice = createSlice({
           // Normaliser l'ID de conversation
           const conversationId = normalizeConversationId(action.payload.conversationId);
           
-          // CORRECTION: Vérifier si l'ID de conversation existe déjà dans state.conversations
+          // Initialiser si nécessaire
           if (!state.conversations[conversationId]) {
             state.conversations[conversationId] = [];
           }
@@ -593,8 +574,7 @@ const messagesSlice = createSlice({
           const existingMessages = state.conversations[conversationId];
           const newMessages = action.payload.messages;
           
-          // CORRECTION: Amélioration de la fusion des messages pour éviter les duplications
-          // Créer un Map pour éliminer les doublons efficacement
+          // Créer un Map pour éliminer les doublons
           const messageMap = new Map();
           
           // Ajouter les messages existants au Map
@@ -607,14 +587,7 @@ const messagesSlice = createSlice({
           // Ajouter ou remplacer par les nouveaux messages
           newMessages.forEach(msg => {
             if (msg && msg.id) {
-              // Si le message existe déjà, ne remplacer que si le nouveau a plus d'informations
-              const existingMsg = messageMap.get(msg.id);
-              if (!existingMsg || 
-                  (msg.isRead && !existingMsg.isRead) || 
-                  (msg.status && !existingMsg.status) ||
-                  (!existingMsg.message && msg.message)) {
-                messageMap.set(msg.id, msg);
-              }
+              messageMap.set(msg.id, msg);
             }
           });
           
@@ -637,7 +610,7 @@ const messagesSlice = createSlice({
           }
           
           // Incrémenter le compteur de requêtes
-          state.fetchCount += 1;
+          state.fetchCount = (state.fetchCount || 0) + 1;
           
           console.log(`Updated messages for conversation ${conversationId}, count: ${mergedMessages.length}, total fetches: ${state.fetchCount}`);
         } else {
@@ -694,24 +667,6 @@ const messagesSlice = createSlice({
       })
       .addCase(sendMessage.rejected, (state, action) => {
         state.error = action.payload || 'Échec de l\'envoi du message';
-      })
-      // Action spéciale pour mettre à jour les messages en attente
-      .addCase('messages/updatePendingMessages', (state, action) => {
-        // Parcourir toutes les conversations
-        Object.keys(state.conversations).forEach(conversationId => {
-          const messages = state.conversations[conversationId];
-          
-          // Mettre à jour le statut des messages en attente
-          state.conversations[conversationId] = messages.map(message => {
-            if (message.status === 'pending' && socketService.isConnected()) {
-              return {
-                ...message,
-                status: 'sent'
-              };
-            }
-            return message;
-          });
-        });
       });
   },
 });

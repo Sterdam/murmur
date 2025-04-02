@@ -6,14 +6,14 @@ import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
 import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
-import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../store/slices/messagesSlice';
-import { fetchContacts } from '../store/slices/contactsSlice';
-import { fetchGroups } from '../store/slices/groupsSlice';
+import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../../store/slices/messagesSlice';
+import { fetchContacts } from '../../store/slices/contactsSlice';
+import { fetchGroups } from '../../store/slices/groupsSlice';
 
 // Components
-import Avatar from '../components/ui/Avatar';
-import MessageList from '../components/chat/MessageList';
-import MessageInput from '../components/chat/MessageInput';
+import Avatar from '../ui/Avatar';
+import MessageList from '../chat/MessageList';
+import MessageInput from '../chat/MessageInput';
 
 const ChatContainer = styled.div`
   display: flex;
@@ -216,61 +216,64 @@ const Chat = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
-  // CORRECTION: Référence pour suivre les chargements de données
+  // Référence pour suivre le chargement initial
   const initialLoadDone = useRef(false);
   
-  // Normaliser l'ID de conversation une fois pour tout le composant
-  const normalizedId = useMemo(() => normalizeConversationId(conversationId), [conversationId]);
+  // Normaliser l'ID de conversation pour tout le composant
+  const normalizedId = useMemo(() => {
+    return conversationId ? normalizeConversationId(conversationId) : null;
+  }, [conversationId]);
   
+  // Sélecteurs Redux
   const { contacts, loading: contactsLoading } = useSelector((state) => state.contacts);
   const { groups, loading: groupsLoading } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
   const { loading: messagesLoading, error: messagesError } = useSelector((state) => state.messages);
   
+  // États locaux
   const [conversation, setConversation] = useState(null);
   const [isGroup, setIsGroup] = useState(false);
   const [error, setError] = useState(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const [onlineStatus, setOnlineStatus] = useState(false);
   
-  // CORRECTION: Fonction de débogage simplifiée
+  // Fonction pour afficher des informations de débogage
   const debugConversation = useCallback(() => {
-    console.log(`[Chat] ID: ${normalizedId}, Group: ${isGroup}, User: ${user?.id}`);
+    console.log(`Chat debug - ID: ${normalizedId}, Group: ${isGroup}, User: ${user?.id}`);
   }, [normalizedId, isGroup, user]);
   
-  // CORRECTION: Load contacts and groups if needed - une seule fois
+  // Charger les contacts et groupes si nécessaire - une seule fois
   useEffect(() => {
     if (initialLoadDone.current) return;
     
     const loadData = async () => {
       try {
-        const promises = [];
-        
+        console.log('Initial data load in Chat component');
         // Charger les contacts si nécessaire
         if (contacts.length === 0 && !contactsLoading) {
-          promises.push(dispatch(fetchContacts()));
+          await dispatch(fetchContacts()).unwrap();
         }
         
         // Charger les groupes si nécessaire
         if (groups.length === 0 && !groupsLoading) {
-          promises.push(dispatch(fetchGroups()));
+          await dispatch(fetchGroups()).unwrap();
         }
         
-        await Promise.all(promises);
         initialLoadDone.current = true;
       } catch (err) {
-        console.error('[Chat] Error loading initial data:', err);
+        console.error('Error loading initial data in Chat:', err);
+        setError("Erreur lors du chargement des données initiales");
       }
     };
     
     loadData();
   }, [dispatch, contacts.length, groups.length, contactsLoading, groupsLoading]);
   
-  // CORRECTION: Configurer les détails de la conversation basés sur l'ID - ne plus avoir les dépendances problématiques
+  // Configurer la conversation basée sur l'ID
   useEffect(() => {
     if (!conversationId || !normalizedId) return;
     
-    console.log(`[Chat] Opening conversation ${normalizedId}`);
+    console.log(`Opening conversation ${normalizedId}`);
     
     // Réinitialiser les erreurs
     setError(null);
@@ -279,23 +282,23 @@ const Chat = () => {
     const groupChat = normalizedId.startsWith('group:');
     setIsGroup(groupChat);
     
-    // Définir la conversation active dans Redux (utiliser l'ID normalisé)
+    // Définir la conversation active dans Redux
     dispatch(setActiveConversation(normalizedId));
     
-    // Nettoyer lors du démontage
+    // Nettoyage lors du démontage
     return () => {
       dispatch(setActiveConversation(null));
     };
   }, [normalizedId, dispatch, conversationId]);
   
-  // CORRECTION: Configurer la conversation après le chargement des données
+  // Configurer les détails de la conversation après le chargement des données
   useEffect(() => {
     if (!conversationId || !user || !initialLoadDone.current) return;
     
     let currentConversation = null;
     
     if (isGroup) {
-      // Pour les conversations de groupe, extraire l'ID du groupe et trouver le groupe
+      // Pour les conversations de groupe, extraire l'ID du groupe
       const groupId = normalizedId.replace('group:', '');
       
       const group = groups.find(g => g.id === groupId);
@@ -305,17 +308,17 @@ const Chat = () => {
           isGroup: true
         };
       } else if (!groupsLoading && groups.length > 0) {
-        console.error('[Chat] Group not found:', groupId);
+        console.error('Group not found:', groupId);
         setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
     } else if (normalizedId.includes(':')) {
       // Pour les conversations directes
       if (user && contacts.length > 0) {
-        // Trouver l'ID de l'autre utilisateur dans la conversation
+        // Trouver l'ID de l'autre utilisateur
         const participants = normalizedId.split(':');
         const otherUserId = participants[0] === user.id ? participants[1] : participants[0];
         
-        // Trouver le contact avec cet ID
+        // Trouver le contact
         const contact = contacts.find(c => c.id === otherUserId);
         if (contact) {
           currentConversation = {
@@ -326,18 +329,18 @@ const Chat = () => {
           // Simuler un statut en ligne aléatoire (pour démo)
           setOnlineStatus(Math.random() > 0.5);
         } else if (!contactsLoading && contacts.length > 0) {
-          console.error('[Chat] Contact not found:', otherUserId);
+          console.error('Contact not found:', otherUserId);
           setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
     } else {
-      // Format d'ID non standard
-      console.warn('[Chat] Non-standard conversation ID format, trying to load anyway');
-      // Pour ces cas, on crée un objet de conversation "minimal"
+      // Format d'ID non standard - Pour UUID
+      console.log('Non-standard conversation ID format, trying direct load');
       currentConversation = {
         id: normalizedId,
         name: "Conversation",
-        isGroup: false
+        isGroup: false,
+        username: "Utilisateur"
       };
     }
     
@@ -353,15 +356,17 @@ const Chat = () => {
     }
   }, [messagesError, error]);
   
+  // Naviguer vers la page d'accueil
   const handleBack = () => {
     navigate('/');
   };
   
+  // Afficher/masquer le panneau d'information
   const toggleInfoPanel = () => {
     setInfoOpen(!infoOpen);
   };
   
-  // Si nous avons une erreur
+  // Afficher un état d'erreur
   if (error) {
     let errorMessage = "Une erreur s'est produite";
     let errorDetails = "Impossible de charger cette conversation. Veuillez vérifier votre connexion et réessayer.";

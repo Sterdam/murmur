@@ -158,12 +158,6 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     return conversationId ? normalizeConversationId(conversationId) : null;
   }, [conversationId]);
   
-  // Log pour débogage
-  useEffect(() => {
-    console.log(`MessageInput: conversation ${conversationId} → normalisée: ${normalizedConversationId}`);
-    console.log(`MessageInput: recipientId=${recipientId}, groupId=${groupId}`);
-  }, [conversationId, normalizedConversationId, recipientId, groupId]);
-  
   // Trouver le destinataire et vérifier sa clé publique
   const recipient = useCallback(() => {
     if (!recipientId || !Array.isArray(contacts)) return null;
@@ -216,12 +210,15 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     setContentRows(1);
     setUploadedFile(null);
     
+    // Debug logs
+    console.log(`MessageInput setup - ConversationId: ${normalizedConversationId}, Recipient: ${recipientId}, Group: ${groupId}`);
+    
     return () => {
       if (typingTimeout) {
         clearTimeout(typingTimeout);
       }
     };
-  }, [conversationId, recipientId, groupId]);
+  }, [conversationId, recipientId, groupId, normalizedConversationId]);
   
   // Fonction pour calculer le nombre de lignes du message
   const calculateRows = useCallback((text) => {
@@ -263,104 +260,101 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   };
   
   // Soumettre le message
-  // Dans MessageInput.js, modifiez la fonction d'envoi de message:
-
-const handleSubmit = async (e) => {
-  e.preventDefault();
-  
-  // Nettoyer le message
-  const trimmedMessage = message.trim();
-  
-  // Validation
-  if (!trimmedMessage || sending) return;
-  
-  // Vérifications additionnelles
-  if (!recipientId && !groupId) {
-    setError("Impossible d'envoyer le message : destinataire non spécifié.");
-    return;
-  }
-  
-  // Vérifier la clé publique pour les messages directs
-  if (recipientId && !hasPublicKey) {
-    setError("Impossible d'envoyer le message : le destinataire n'a pas partagé sa clé publique. Vous devez être contacts connectés pour échanger des messages en toute sécurité.");
-    return;
-  }
-  
-  // Vérifier si dans un groupe
-  if (groupId && !groupHasMembers) {
-    setError("Impossible d'envoyer le message : aucun membre du groupe n'a de clé publique disponible.");
-    return;
-  }
-  
-  try {
-    setSending(true);
-    setError(null);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     
-    // Préparer les données du message
-    const messageData = {
-      message: trimmedMessage,
-      conversationId: normalizedConversationId
-    };
+    // Nettoyer le message
+    const trimmedMessage = message.trim();
     
-    // Ajouter les identifiants appropriés
-    if (recipientId) {
-      messageData.recipientId = recipientId;
-    } else if (groupId) {
-      messageData.groupId = groupId;
+    // Validation
+    if (!trimmedMessage || sending) return;
+    
+    // Vérifications additionnelles
+    if (!recipientId && !groupId) {
+      setError("Impossible d'envoyer le message : destinataire non spécifié.");
+      return;
     }
     
-    console.log(`Envoi de message à ${normalizedConversationId}`);
+    // Vérifier la clé publique pour les messages directs
+    if (recipientId && !hasPublicKey) {
+      setError("Impossible d'envoyer le message : le destinataire n'a pas partagé sa clé publique. Vous devez être contacts connectés pour échanger des messages en toute sécurité.");
+      return;
+    }
     
-    // Vérifier explicitement la connexion socket avant l'envoi
-    const isSocketConnected = socketService.isConnected();
-    console.log(`État de la connexion socket: ${isSocketConnected ? 'connecté' : 'déconnecté'}`);
+    // Vérifier si dans un groupe
+    if (groupId && !groupHasMembers) {
+      setError("Impossible d'envoyer le message : aucun membre du groupe n'a de clé publique disponible.");
+      return;
+    }
     
-    // Si le socket n'est pas connecté, tenter une reconnexion
-    if (!isSocketConnected) {
-      console.log("Socket non connecté, tentative de reconnexion...");
-      // Essayer de reconnecter le socket en arrière-plan
-      const token = localStorage.getItem('token');
-      if (token) {
-        socketService.connect(token).catch(err => {
-          console.warn("Échec de la reconnexion du socket:", err);
-        });
+    try {
+      setSending(true);
+      setError(null);
+      
+      // Préparer les données du message
+      const messageData = {
+        message: trimmedMessage,
+        conversationId: normalizedConversationId
+      };
+      
+      // Ajouter les identifiants appropriés
+      if (recipientId) {
+        messageData.recipientId = recipientId;
+      } else if (groupId) {
+        messageData.groupId = groupId;
       }
-    }
-    
-    // Dispatch de l'action d'envoi, même en cas de déconnexion
-    // La bibliothèque gère maintenant la mise en file d'attente des messages
-    await dispatch(sendMessage(messageData)).unwrap();
-    
-    // Réinitialiser le formulaire après succès
-    setMessage('');
-    setContentRows(1);
-    setUploadedFile(null);
-    
-    // Focus sur le textarea
-    if (textAreaRef.current) {
-      textAreaRef.current.focus();
-    }
-  } catch (error) {
-    console.error('Failed to send message:', error);
-    
-    // Gérer les erreurs spécifiques
-    if (typeof error === 'string') {
-      if (error.includes('public key')) {
-        setError("Impossible d'envoyer le message en toute sécurité. Assurez-vous d'être connecté avec ce contact avant d'échanger des messages.");
-      } else if (error.includes('network') || error.includes('connexion')) {
-        setError("Problème de connexion. Le message sera envoyé dès que vous serez à nouveau en ligne.");
+      
+      console.log(`Sending message to ${normalizedConversationId}`);
+      
+      // Vérifier explicitement la connexion socket avant l'envoi
+      const isSocketConnected = socketService.isConnected();
+      console.log(`Socket connection status: ${isSocketConnected ? 'connected' : 'disconnected'}`);
+      
+      // Si le socket n'est pas connecté, tenter une reconnexion
+      if (!isSocketConnected) {
+        console.log("Socket not connected, attempting reconnection...");
+        // Essayer de reconnecter le socket en arrière-plan
+        const token = localStorage.getItem('token');
+        if (token) {
+          socketService.connect(token).catch(err => {
+            console.warn("Socket reconnection failed:", err);
+          });
+        }
+      }
+      
+      // Dispatch de l'action d'envoi
+      await dispatch(sendMessage(messageData)).unwrap();
+      
+      // Réinitialiser le formulaire après succès
+      setMessage('');
+      setContentRows(1);
+      setUploadedFile(null);
+      
+      // Focus sur le textarea
+      if (textAreaRef.current) {
+        textAreaRef.current.focus();
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      
+      // Gérer les erreurs spécifiques
+      if (typeof error === 'string') {
+        if (error.includes('public key')) {
+          setError("Impossible d'envoyer le message en toute sécurité. Assurez-vous d'être connecté avec ce contact avant d'échanger des messages.");
+        } else if (error.includes('network') || error.includes('connexion')) {
+          setError("Problème de connexion. Le message sera envoyé dès que vous serez à nouveau en ligne.");
+        } else {
+          setError(error);
+        }
+      } else if (error && error.message) {
+        setError(error.message);
       } else {
-        setError(error);
+        setError("Échec de l'envoi du message. Veuillez réessayer.");
       }
-    } else if (error && error.message) {
-      setError(error.message);
-    } else {
-      setError("Échec de l'envoi du message. Veuillez réessayer.");
+    } finally {
+      setSending(false);
     }
-  } finally {
-    setSending(false);
-  }
-};
+  };
   
   // Gérer les touches spéciales (notamment Entrée pour envoyer)
   const handleKeyDown = (e) => {
