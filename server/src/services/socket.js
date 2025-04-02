@@ -1,3 +1,4 @@
+// server/src/services/socket.js - Corrigé
 const { verifyToken } = require('./auth');
 const { storeMessage, getUserById } = require('./redis');
 const geoRestrictionCheck = require('../middleware/geoRestriction');
@@ -24,7 +25,14 @@ module.exports = (io) => {
         return next(new Error('Authentication required'));
       }
       
-      const decoded = verifyToken(token);
+      // Décodage du token
+      let decoded;
+      try {
+        decoded = verifyToken(token);
+      } catch (tokenError) {
+        console.error('Token verification error:', tokenError);
+        return next(new Error('Invalid token'));
+      }
       
       // Get user data
       const user = await getUserById(decoded.id);
@@ -32,43 +40,45 @@ module.exports = (io) => {
         return next(new Error('User not found'));
       }
       
-      // Check geo-restrictions
-      const ip = getClientIp(socket);
-      const clientRegion = socket.handshake.headers['x-client-region'] || null;
-      
-      // Create mock request/response objects to use the middleware
-      const mockReq = {
-        ip,
-        headers: socket.handshake.headers,
-        user: {
-          id: user.id,
-          username: user.username,
-          allowedRegions: user.allowedRegions
-        }
-      };
-      
-      const mockRes = {
-        status: (code) => ({
-          json: (data) => {
-            if (code !== 200) {
-              return next(new Error(data.message || 'Geo-restriction: Access denied'));
-            }
+      // Check geo-restrictions (désactivé en développement)
+      if (process.env.NODE_ENV === 'production') {
+        const ip = getClientIp(socket);
+        const clientRegion = socket.handshake.headers['x-client-region'] || null;
+        
+        // Create mock request/response objects to use the middleware
+        const mockReq = {
+          ip,
+          headers: socket.handshake.headers,
+          user: {
+            id: user.id,
+            username: user.username,
+            allowedRegions: user.allowedRegions
           }
-        })
-      };
-      
-      // Use a modified version of geo restriction
-      // with strictMode only if user has allowedRegions set
-      const geoOptions = {
-        strictMode: Array.isArray(user.allowedRegions) && user.allowedRegions.length > 0
-      };
-      
-      const geoCheck = geoRestrictionCheck(geoOptions);
-      
-      // Apply geo-restriction check
-      await new Promise((resolve) => {
-        geoCheck(mockReq, mockRes, resolve);
-      });
+        };
+        
+        const mockRes = {
+          status: (code) => ({
+            json: (data) => {
+              if (code !== 200) {
+                return next(new Error(data.message || 'Geo-restriction: Access denied'));
+              }
+            }
+          })
+        };
+        
+        // Use a modified version of geo restriction
+        // with strictMode only if user has allowedRegions set
+        const geoOptions = {
+          strictMode: Array.isArray(user.allowedRegions) && user.allowedRegions.length > 0
+        };
+        
+        const geoCheck = geoRestrictionCheck(geoOptions);
+        
+        // Apply geo-restriction check
+        await new Promise((resolve) => {
+          geoCheck(mockReq, mockRes, resolve);
+        });
+      }
       
       // Attach user to socket
       socket.user = {
@@ -102,18 +112,31 @@ module.exports = (io) => {
     
     // Handle joining groups
     socket.on('join-group', (groupId) => {
+      if (!groupId) {
+        console.warn('Invalid group ID provided');
+        return;
+      }
       socket.join(`group:${groupId}`);
+      console.log(`User ${socket.user.username} joined group ${groupId}`);
     });
     
     // Handle leaving groups
     socket.on('leave-group', (groupId) => {
+      if (!groupId) return;
       socket.leave(`group:${groupId}`);
+      console.log(`User ${socket.user.username} left group ${groupId}`);
     });
     
     // Handle private messages
     socket.on('private-message', async (data) => {
       try {
         const { recipientId, message, encryptedKey } = data;
+        
+        // Validation de base
+        if (!recipientId || !message) {
+          socket.emit('error', { message: 'Invalid message data' });
+          return;
+        }
         
         // Store message in Redis
         const messageId = await storeMessage({
@@ -147,6 +170,7 @@ module.exports = (io) => {
           delivered: !!recipientSocketId,
         });
       } catch (error) {
+        console.error('Error processing private message:', error);
         socket.emit('error', { message: 'Failed to send message' });
       }
     });
@@ -155,6 +179,12 @@ module.exports = (io) => {
     socket.on('group-message', async (data) => {
       try {
         const { groupId, message, encryptedKeys } = data;
+        
+        // Validation
+        if (!groupId || !message) {
+          socket.emit('error', { message: 'Invalid group message data' });
+          return;
+        }
         
         // Store message in Redis
         const messageId = await storeMessage({
@@ -176,6 +206,7 @@ module.exports = (io) => {
           timestamp: Date.now(),
         });
       } catch (error) {
+        console.error('Error processing group message:', error);
         socket.emit('error', { message: 'Failed to send group message' });
       }
     });
@@ -188,6 +219,7 @@ module.exports = (io) => {
     // Handle typing indicator
     socket.on('typing', (data) => {
       const { conversationId } = data;
+      if (!conversationId) return;
       
       if (conversationId.startsWith('group:')) {
         // Group conversation

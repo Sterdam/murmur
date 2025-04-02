@@ -1,8 +1,9 @@
+// client/src/pages/Contacts.js - Corrigé
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiSearch, FiMessageSquare, FiUserPlus } from 'react-icons/fi';
+import { FiPlus, FiSearch, FiMessageSquare, FiUserPlus, FiAlertCircle } from 'react-icons/fi';
 
 // Components
 import Card, { CardHeader, CardTitle, CardContent, CardFooter } from '../components/ui/Card';
@@ -126,10 +127,34 @@ const SuccessMessage = styled.div`
   margin-bottom: 16px;
 `;
 
+const ErrorMessage = styled.div`
+  background-color: rgba(244, 67, 54, 0.1);
+  color: #f44336;
+  padding: 10px 16px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  
+  svg {
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+`;
+
+const HelpText = styled.div`
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 4px;
+  background-color: rgba(255, 255, 255, 0.05);
+  font-size: 0.875rem;
+`;
+
 const Contacts = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const { contacts, loading, error } = useSelector((state) => state.contacts);
+  const { user } = useSelector((state) => state.auth);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
@@ -151,6 +176,13 @@ const Contacts = () => {
     try {
       setAddStatus({ loading: true, error: null, success: false });
       
+      // Assurez-vous que le token est valide avant de faire la requête
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('Authentication required. Please login again.');
+      }
+      
+      // On utilise unwrap() pour obtenir directement le résultat ou l'erreur
       await dispatch(addContact(newContactUsername.trim())).unwrap();
       
       setAddStatus({ loading: false, error: null, success: true });
@@ -163,9 +195,20 @@ const Contacts = () => {
       }, 3000);
       
     } catch (error) {
+      console.error('Error adding contact:', error);
+      let errorMessage = '';
+      
+      if (typeof error === 'string') {
+        errorMessage = error;
+      } else if (error.message) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = 'Failed to add contact. Please try again later.';
+      }
+      
       setAddStatus({ 
         loading: false, 
-        error: error || 'Failed to add contact', 
+        error: errorMessage, 
         success: false 
       });
     }
@@ -174,10 +217,12 @@ const Contacts = () => {
   const handleOpenChat = (contact) => {
     if (!contact || !contact.id) return;
     
-    const { user } = useSelector((state) => state.auth);
-    if (!user || !user.id) return;
-    
     // Create conversation ID by sorting the IDs alphabetically
+    if (!user || !user.id) {
+      console.error('User data not available');
+      return;
+    }
+    
     const conversationId = [user.id, contact.id].sort().join(':');
     
     // Set active conversation
@@ -223,6 +268,13 @@ const Contacts = () => {
                 </SuccessMessage>
               )}
               
+              {(error || addStatus.error) && (
+                <ErrorMessage>
+                  <FiAlertCircle size={18} />
+                  <span>{error || addStatus.error}</span>
+                </ErrorMessage>
+              )}
+              
               <TextField
                 label="Username"
                 placeholder="Enter username to add"
@@ -234,12 +286,21 @@ const Contacts = () => {
                 }}
                 fullWidth
                 error={!!error || !!addStatus.error}
-                helperText={error || addStatus.error}
               />
+              
+              <HelpText>
+                Enter the exact username of the person you want to add to your contacts.
+                Make sure they already have a Murmur account.
+              </HelpText>
+              
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
                 <Button
                   variant="outlined"
-                  onClick={() => setShowAddForm(false)}
+                  onClick={() => {
+                    setShowAddForm(false);
+                    setAddStatus({ loading: false, error: null, success: false });
+                    dispatch(clearError());
+                  }}
                   style={{ marginRight: '12px' }}
                 >
                   Cancel
@@ -275,7 +336,7 @@ const Contacts = () => {
       ) : filteredContacts.length > 0 ? (
         <ContactsList>
           {filteredContacts.map(contact => (
-            <ContactCard key={contact.id} elevation={1}>
+            <ContactCard key={contact.id || Math.random()} elevation={1}>
               <ContactInfo>
                 <Avatar 
                   src={contact.avatar} 

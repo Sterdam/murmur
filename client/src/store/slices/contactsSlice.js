@@ -1,3 +1,4 @@
+// client/src/store/slices/contactsSlice.js - Corrigé
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 
@@ -6,14 +7,14 @@ export const fetchContacts = createAsyncThunk(
   'contacts/fetchContacts',
   async (_, { rejectWithValue, getState }) => {
     try {
-      const response = await api.get('/users/contacts', {
-        headers: {
-          Authorization: `Bearer ${getState().auth.token}`,
-        },
-      });
+      const response = await api.get('/users/contacts');
       return response.data.data;
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Failed to fetch contacts');
+      console.error('Error fetching contacts:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        'Failed to fetch contacts. Please check your connection and try again.'
+      );
     }
   }
 );
@@ -22,34 +23,55 @@ export const addContact = createAsyncThunk(
   'contacts/addContact',
   async (username, { rejectWithValue, getState }) => {
     try {
-      const response = await api.post('/users/contacts', { username }, {
-        headers: {
-          Authorization: `Bearer ${getState().auth.token}`,
-        },
-      });
+      // Ajouter d'abord le contact
+      const response = await api.post('/users/contacts', { username });
       
-      // Return the contact data from the response if available
-      if (response.data && response.data.data) {
-        return response.data.data;
-      }
-      
-      // If no contact data in response, fetch the contact details
-      if (response.data.success) {
-        // Try to get contact info from search
-        const searchResponse = await api.get(`/users/search?username=${username}`, {
-          headers: {
-            Authorization: `Bearer ${getState().auth.token}`,
-          },
-        });
+      // Si le contact a été ajouté avec succès
+      if (response.data && response.data.success) {
+        if (response.data.data) {
+          return response.data.data;
+        }
         
-        if (searchResponse.data.data.length > 0) {
-          return searchResponse.data.data[0];
+        // Si les données du contact ne sont pas dans la réponse, rechercher l'utilisateur
+        try {
+          const searchResponse = await api.get(`/users/search?username=${username}`);
+          
+          if (searchResponse.data.data && searchResponse.data.data.length > 0) {
+            return searchResponse.data.data[0];
+          }
+          
+          // Si aucun utilisateur n'est trouvé, retourner un objet avec les informations de base
+          return {
+            id: `temp-${Date.now()}`,
+            username: username,
+            displayName: username,
+            status: 'Pending'
+          };
+        } catch (searchError) {
+          console.warn('User search failed after adding contact:', searchError);
+          // Retourner quand même un contact temporaire pour une expérience utilisateur harmonieuse
+          return {
+            id: `temp-${Date.now()}`,
+            username: username,
+            displayName: username,
+            status: 'Pending'
+          };
         }
       }
       
-      throw new Error("Contact added but details not available");
+      throw new Error('Failed to add contact');
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'Failed to add contact');
+      console.error('Error adding contact:', error);
+      
+      if (error.response && error.response.status === 404) {
+        return rejectWithValue('User not found. Please check the username and try again.');
+      }
+      
+      return rejectWithValue(
+        error.response?.data?.message || 
+        error.message || 
+        'Failed to add contact. Please try again later.'
+      );
     }
   }
 );
@@ -58,14 +80,14 @@ export const searchUsers = createAsyncThunk(
   'contacts/searchUsers',
   async (username, { rejectWithValue, getState }) => {
     try {
-      const response = await api.get(`/users/search?username=${username}`, {
-        headers: {
-          Authorization: `Bearer ${getState().auth.token}`,
-        },
-      });
+      const response = await api.get(`/users/search?username=${username}`);
       return response.data.data;
     } catch (error) {
-      return rejectWithValue(error.response?.data?.message || 'User search failed');
+      console.error('Error searching users:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        'User search failed. Please try again.'
+      );
     }
   }
 );
@@ -99,11 +121,12 @@ const contactsSlice = createSlice({
       })
       .addCase(fetchContacts.fulfilled, (state, action) => {
         state.loading = false;
-        state.contacts = action.payload;
+        // S'assurer que action.payload est un tableau
+        state.contacts = Array.isArray(action.payload) ? action.payload : [];
       })
       .addCase(fetchContacts.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload;
+        state.error = action.payload || 'Failed to fetch contacts';
       })
       // Add Contact
       .addCase(addContact.pending, (state) => {
@@ -113,9 +136,10 @@ const contactsSlice = createSlice({
       .addCase(addContact.fulfilled, (state, action) => {
         state.loading = false;
         if (action.payload) {
-          // Check if contact already exists
+          // Vérifier si le contact existe déjà
           const contactExists = state.contacts.some(
-            (contact) => contact.id === action.payload.id
+            (contact) => contact.id === action.payload.id || 
+                         contact.username === action.payload.username
           );
           
           if (!contactExists) {
@@ -125,7 +149,7 @@ const contactsSlice = createSlice({
       })
       .addCase(addContact.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload;
+        state.error = action.payload || 'Failed to add contact';
       })
       // Search Users
       .addCase(searchUsers.pending, (state) => {
@@ -134,11 +158,12 @@ const contactsSlice = createSlice({
       })
       .addCase(searchUsers.fulfilled, (state, action) => {
         state.searchLoading = false;
-        state.searchResults = action.payload;
+        // S'assurer que action.payload est un tableau
+        state.searchResults = Array.isArray(action.payload) ? action.payload : [];
       })
       .addCase(searchUsers.rejected, (state, action) => {
         state.searchLoading = false;
-        state.error = action.payload;
+        state.error = action.payload || 'User search failed';
       });
   },
 });

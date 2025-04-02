@@ -1,4 +1,4 @@
-// client/src/services/api.js
+// client/src/services/api.js - Corrigé
 import axios from 'axios';
 import envConfig from '../config/env';
 
@@ -18,7 +18,6 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  withCredentials: true, // Important pour les cookies CORS
 });
 
 // Intercepteur de requêtes pour ajouter le token d'authentification

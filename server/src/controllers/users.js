@@ -1,3 +1,4 @@
+// server/src/controllers/users.js - Corrigé
 const { getUserById, getUserByUsername, addContact, getUserContacts, storeUser } = require('../services/redis');
 
 /**
@@ -163,9 +164,10 @@ exports.addContact = async (req, res, next) => {
     }
     
     if (!contactUser) {
-      return res.status(404).json({
+      // Au lieu de 404, utilisons 400 avec un message clair
+      return res.status(400).json({
         success: false,
-        message: 'Contact not found',
+        message: 'User not found. Please check the username and try again.',
       });
     }
     
@@ -189,7 +191,12 @@ exports.addContact = async (req, res, next) => {
       data: contactInfo
     });
   } catch (error) {
-    next(error);
+    // Gérer l'erreur explicitement au lieu de la passer au middleware suivant
+    console.error('Error adding contact:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add contact. Please try again later.'
+    });
   }
 };
 
@@ -226,6 +233,11 @@ exports.getContacts = async (req, res, next) => {
       data: validContacts,
     });
   } catch (error) {
-    next(error);
+    // Gérer l'erreur explicitement
+    console.error('Error getting contacts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve contacts. Please try again later.'
+    });
   }
 };
