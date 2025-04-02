@@ -6,14 +6,14 @@ import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
 import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
-import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../../store/slices/messagesSlice';
-import { fetchContacts } from '../../store/slices/contactsSlice';
-import { fetchGroups } from '../../store/slices/groupsSlice';
+import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../store/slices/messagesSlice';
+import { fetchContacts } from '../store/slices/contactsSlice';
+import { fetchGroups } from '../store/slices/groupsSlice';
 
 // Components
-import Avatar from '../ui/Avatar';
-import MessageList from '../chat/MessageList';
-import MessageInput from '../chat/MessageInput';
+import Avatar from '../components/ui/Avatar';
+import MessageList from '../components/chat/MessageList';
+import MessageInput from '../components/chat/MessageInput';
 
 const ChatContainer = styled.div`
   display: flex;
