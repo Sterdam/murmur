@@ -47,40 +47,68 @@ const App = () => {
   const [initialized, setInitialized] = useState(false);
 
   // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
-  const handlePrivateMessage = useCallback((data) => {
+  const handlePrivateMessage = useCallback(async (data) => {
     try {
-      // Traitement du message privé
-      const decryptedMessage = data.message; // Simplifié, pas de déchiffrement réel ici
+      console.log('Received private message:', data);
       
       if (!user || !user.id) {
         console.error('User data not available for handling private message');
         return;
       }
       
+      // Récupérer les informations de l'utilisateur
+      const { privateKey } = getEncryptionKeys() || {};
+      
+      if (!privateKey) {
+        console.error('No private key available for decryption');
+        return;
+      }
+      
+      // Créer l'ID de conversation
       const conversationId = [user.id, data.senderId].sort().join(':');
+      
+      // Essayer de déchiffrer le message
+      let messageText = data.message;
+      try {
+        if (data.encryptedKey && privateKey) {
+          console.log('Trying to decrypt message with encryptedKey');
+          const metadata = data.metadata || '{}'; // Utiliser un objet vide si pas de métadonnées
+          messageText = await decryptMessage(
+            data.message,
+            data.encryptedKey,
+            privateKey,
+            null,
+            null,
+            metadata
+          );
+          console.log('Message decrypted successfully');
+        }
+      } catch (decryptError) {
+        console.error('Failed to decrypt received message:', decryptError);
+        messageText = '[Encrypted message - Cannot decrypt]';
+      }
       
       // Dispatch l'action pour ajouter le message
       dispatch(addMessage({
         message: {
           ...data,
-          message: decryptedMessage,
+          message: messageText,
           conversationId,
         },
       }));
       
       // Notification si l'app est en arrière-plan
       if (document.hidden) {
-        showNotification(data.senderUsername, decryptedMessage);
+        showNotification(data.senderUsername, messageText);
       }
     } catch (error) {
       console.error('Error handling private message:', error);
     }
   }, [dispatch, user]);
   
-  const handleGroupMessage = useCallback((data) => {
+  const handleGroupMessage = useCallback(async (data) => {
     try {
-      // Traitement du message de groupe
-      const decryptedMessage = data.message; // Simplifié
+      console.log('Received group message:', data);
       
       if (!user || !user.id) {
         console.error('User data not available for handling group message');
@@ -89,11 +117,43 @@ const App = () => {
       
       const conversationId = `group:${data.groupId}`;
       
+      // Récupérer la clé privée
+      const { privateKey } = getEncryptionKeys() || {};
+      
+      if (!privateKey) {
+        console.error('No private key available for decryption');
+        return;
+      }
+      
+      // Extraire la clé pour cet utilisateur 
+      let messageText = data.message;
+      try {
+        // Vérifier si ce message contient une clé pour cet utilisateur
+        const encryptedKey = data.encryptedKeys && data.encryptedKeys[user.id];
+        
+        if (encryptedKey && privateKey) {
+          console.log('Trying to decrypt group message with user key');
+          const metadata = data.metadata || '{}';
+          messageText = await decryptMessage(
+            data.message,
+            encryptedKey,
+            privateKey,
+            null,
+            null,
+            metadata
+          );
+          console.log('Group message decrypted successfully');
+        }
+      } catch (decryptError) {
+        console.error('Failed to decrypt received group message:', decryptError);
+        messageText = '[Encrypted message - Cannot decrypt]';
+      }
+      
       // Dispatch l'action pour ajouter le message
       dispatch(addMessage({
         message: {
           ...data,
-          message: decryptedMessage,
+          message: messageText,
           conversationId,
         },
       }));
@@ -102,7 +162,7 @@ const App = () => {
       if (document.hidden) {
         const group = groups?.find(g => g.id === data.groupId);
         const title = group ? `${data.senderUsername} in ${group.name}` : data.senderUsername;
-        showNotification(title, decryptedMessage);
+        showNotification(title, messageText);
       }
     } catch (error) {
       console.error('Error handling group message:', error);

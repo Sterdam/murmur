@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
-import { useSelector } from 'react-redux';
+import React, { useEffect, useRef, useState } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
 import styled from 'styled-components';
+import { fetchConversationMessages } from '../../store/slices/messagesSlice';
 
 // Components
 import Avatar from '../ui/Avatar';
@@ -133,10 +134,42 @@ const formatSimpleTime = (date) => {
 };
 
 const MessageList = ({ conversationId }) => {
-  const { conversations } = useSelector((state) => state.messages);
+  const dispatch = useDispatch();
+  const { conversations, loading } = useSelector((state) => state.messages);
   const { user } = useSelector((state) => state.auth);
   const messages = conversations[conversationId] || [];
   const messagesEndRef = useRef(null);
+  const [refreshInterval, setRefreshInterval] = useState(null);
+  
+  // Récupérer les messages au chargement et démarrer un intervalle
+  useEffect(() => {
+    if (conversationId) {
+      console.log('Fetching messages for conversation:', conversationId);
+      
+      // Récupération initiale après un court délai
+      const initialTimeout = setTimeout(() => {
+        dispatch(fetchConversationMessages(conversationId))
+          .catch(err => console.error('Failed initial message fetch:', err));
+      }, 800);
+      
+      // Rafraîchir moins fréquemment (30 secondes)
+      const intervalId = setInterval(() => {
+        console.log('Auto-refreshing messages for conversation:', conversationId);
+        dispatch(fetchConversationMessages(conversationId))
+          .catch(err => console.error('Failed to refresh messages:', err));
+      }, 30000); // Augmenté à 30 secondes
+      
+      setRefreshInterval(intervalId);
+      
+      return () => {
+        // Nettoyage à la démontage
+        clearTimeout(initialTimeout);
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+        }
+      };
+    }
+  }, [conversationId, dispatch]);
   
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -145,8 +178,13 @@ const MessageList = ({ conversationId }) => {
     }
   }, [messages]);
   
-  // Group messages by date
+  // Group messages by date, with safety check for message.timestamp
   const groupedMessages = messages.reduce((groups, message) => {
+    if (!message || !message.timestamp) {
+      console.warn('Invalid message detected:', message);
+      return groups;
+    }
+    
     const date = new Date(message.timestamp).toDateString();
     if (!groups[date]) {
       groups[date] = [];
@@ -170,7 +208,16 @@ const MessageList = ({ conversationId }) => {
     }
   };
   
-  if (messages.length === 0) {
+  if (loading && messages.length === 0) {
+    return (
+      <EmptyState>
+        <h3>Loading messages...</h3>
+        <p>Please wait while we securely retrieve your conversation.</p>
+      </EmptyState>
+    );
+  }
+  
+  if (!loading && messages.length === 0) {
     return (
       <EmptyState>
         <h3>No messages yet</h3>

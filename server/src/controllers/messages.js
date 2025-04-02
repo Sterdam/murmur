@@ -13,7 +13,13 @@ exports.getMessages = async (req, res, next) => {
     const { limit = 50, offset = 0 } = req.query;
     
     // Validate if user is part of the conversation
-    if (!conversationId.includes(userId) && !conversationId.startsWith('group:')) {
+    const isUserInConversation = conversationId.startsWith('group:') || 
+                                conversationId.split(':').includes(userId);
+                                
+    console.log(`Checking conversation access: ${conversationId}, User: ${userId}, Access: ${isUserInConversation}`);
+    
+    if (!isUserInConversation) {
+      console.error(`User ${userId} attempted unauthorized access to conversation ${conversationId}`);
       return res.status(403).json({
         success: false,
         message: 'Unauthorized access to conversation',

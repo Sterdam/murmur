@@ -5,17 +5,73 @@ import api from '../../services/api';
 // Async thunks
 export const fetchContacts = createAsyncThunk(
   'contacts/fetchContacts',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, getState }) => {
     try {
-      const response = await api.get('/users/contacts');
+      // Vérifier si on a déjà des contacts et qu'on est en train de recharger (pas le chargement initial)
+      const { contacts, loading } = getState().contacts;
+      
+      // Si on recharge et qu'on a déjà des contacts, on peut être moins stricts en cas d'erreur
+      const isReloading = contacts && contacts.length > 0;
+      
+      // Stocker l'ETag pour les requêtes suivantes
+      let etag = localStorage.getItem('contacts_etag');
+      
+      // Options de requête avec cache headers si disponibles
+      const requestOptions = {};
+      if (etag) {
+        requestOptions.headers = {
+          'If-None-Match': etag
+        };
+      }
+      
+      // Effectuer la requête avec les options de cache
+      console.log('Fetching contacts from API', etag ? '(with ETag)' : '');
+      const response = await api.get('/users/contacts', requestOptions);
+      
+      // Store the new ETag if provided
+      const newEtag = response.headers['etag'];
+      if (newEtag) {
+        localStorage.setItem('contacts_etag', newEtag);
+        console.log('Updated contacts ETag:', newEtag);
+      }
+      
+      // If we got a 304 Not Modified, use our existing data
+      if (response.status === 304) {
+        console.log('Server returned 304 Not Modified, using cached contacts');
+        return getState().contacts.contacts;
+      }
       
       // Vérifier la structure de la réponse
       if (!response.data || typeof response.data !== 'object') {
         throw new Error('Invalid API response format');
       }
       
-      return response.data.data || [];
+      // Extraire les données avec valeur par défaut
+      const contactsData = response.data.data || [];
+      console.log(`Received ${contactsData.length} contacts from API`);
+      
+      return contactsData;
     } catch (error) {
+      // Handle different error types
+      
+      // 304 Not Modified - use existing data (should be handled above but just in case)
+      if (error.response?.status === 304 && getState().contacts.contacts.length > 0) {
+        console.log('304 Not Modified response in error handler, using existing data');
+        return getState().contacts.contacts;
+      }
+      
+      // 429 Too Many Requests - use existing data
+      if (error.response?.status === 429 && getState().contacts.contacts.length > 0) {
+        console.warn('Rate limited (429) while refreshing contacts, using existing data');
+        return getState().contacts.contacts;
+      }
+      
+      // Network errors - use existing data if available
+      if (error.message === 'Network Error' && getState().contacts.contacts.length > 0) {
+        console.warn('Network error while refreshing contacts, using existing data');
+        return getState().contacts.contacts;
+      }
+      
       console.error('Error fetching contacts:', error);
       return rejectWithValue(
         error.response?.data?.message || 
@@ -28,12 +84,40 @@ export const fetchContacts = createAsyncThunk(
 
 export const fetchContactRequests = createAsyncThunk(
   'contacts/fetchContactRequests',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, getState }) => {
     try {
-      const response = await api.get('/users/contact-requests');
+      // Get existing ETag from localStorage
+      let etag = localStorage.getItem('requests_etag');
       
-      // Ajouter un log détaillé pour déboguer
-      console.log("Contact requests raw response:", response);
+      // Set up request options with cache headers if available
+      const requestOptions = {};
+      if (etag) {
+        requestOptions.headers = {
+          'If-None-Match': etag
+        };
+      }
+      
+      console.log('Fetching contact requests from API', etag ? '(with ETag)' : '');
+      const response = await api.get('/users/contact-requests', requestOptions);
+      
+      // Store the new ETag if provided
+      const newEtag = response.headers['etag'];
+      if (newEtag) {
+        localStorage.setItem('requests_etag', newEtag);
+        console.log('Updated requests ETag:', newEtag);
+      }
+      
+      // If we got a 304 Not Modified, use our existing data
+      if (response.status === 304) {
+        console.log('Server returned 304 Not Modified, using cached requests');
+        const { incomingRequests, outgoingRequests } = getState().contacts;
+        return {
+          incoming: incomingRequests || [],
+          outgoing: outgoingRequests || []
+        };
+      }
+      
+      // Log pour déboguer
       console.log("Contact requests data:", response.data);
       
       // S'assurer que le format est correct avec des valeurs par défaut
@@ -42,8 +126,46 @@ export const fetchContactRequests = createAsyncThunk(
         return { incoming: [], outgoing: [] };
       }
       
+      console.log(`Received contact requests - Incoming: ${response.data.data.incoming?.length || 0}, Outgoing: ${response.data.data.outgoing?.length || 0}`);
       return response.data.data;
     } catch (error) {
+      // Handle different error cases
+      
+      // 304 Not Modified - use existing data
+      if (error.response?.status === 304) {
+        console.log('304 Not Modified in error handler, using cached requests');
+        const { incomingRequests, outgoingRequests } = getState().contacts;
+        return {
+          incoming: incomingRequests || [],
+          outgoing: outgoingRequests || []
+        };
+      }
+      
+      // 429 Too Many Requests - use existing data if available
+      if (error.response?.status === 429) {
+        const { incomingRequests, outgoingRequests } = getState().contacts;
+        
+        if (Array.isArray(incomingRequests) || Array.isArray(outgoingRequests)) {
+          console.warn('Rate limited (429) while refreshing contact requests, using existing data');
+          return {
+            incoming: incomingRequests || [],
+            outgoing: outgoingRequests || []
+          };
+        }
+      }
+      
+      // Network errors - use existing data if available
+      if (error.message === 'Network Error') {
+        const { incomingRequests, outgoingRequests } = getState().contacts;
+        if (Array.isArray(incomingRequests) || Array.isArray(outgoingRequests)) {
+          console.warn('Network error while refreshing contact requests, using existing data');
+          return {
+            incoming: incomingRequests || [],
+            outgoing: outgoingRequests || []
+          };
+        }
+      }
+      
       console.error('Error fetching contact requests:', error);
       return rejectWithValue(
         error.response?.data?.message || 
@@ -56,12 +178,24 @@ export const fetchContactRequests = createAsyncThunk(
 
 export const sendContactRequest = createAsyncThunk(
   'contacts/sendContactRequest',
-  async (username, { rejectWithValue }) => {
+  async (username, { rejectWithValue, getState }) => {
     try {
       console.log(`Sending contact request to: ${username}`);
       
       if (!username || typeof username !== 'string') {
         throw new Error('Invalid username provided');
+      }
+      
+      // Vérifier si on est déjà connecté avec cet utilisateur
+      const state = getState();
+      const contacts = state.contacts.contacts;
+      
+      // Éviter d'envoyer une demande si déjà en contact
+      const existingContact = contacts.find(contact => 
+        contact.username.toLowerCase() === username.toLowerCase());
+      
+      if (existingContact) {
+        return rejectWithValue('Cet utilisateur fait déjà partie de vos contacts.');
       }
       
       const response = await api.post('/users/contact-requests', { username });
@@ -78,6 +212,10 @@ export const sendContactRequest = createAsyncThunk(
       
       if (error.response && error.response.status === 404) {
         return rejectWithValue('User not found. Please check the username and try again.');
+      }
+      
+      if (error.response && error.response.status === 403) {
+        return rejectWithValue('Vous n\'êtes pas autorisé à contacter cet utilisateur.');
       }
       
       return rejectWithValue(
@@ -104,7 +242,11 @@ export const acceptContactRequest = createAsyncThunk(
         throw new Error(response.data?.message || 'Failed to accept request');
       }
       
-      return response.data.data;
+      console.log('Accept contact request response:', response.data);
+      return {
+        contact: response.data.data,
+        requestId: requestId
+      };
     } catch (error) {
       console.error('Error accepting contact request:', error);
       return rejectWithValue(
@@ -207,7 +349,18 @@ const contactsSlice = createSlice({
       })
       .addCase(fetchContacts.fulfilled, (state, action) => {
         state.loading = false;
-        state.contacts = Array.isArray(action.payload) ? action.payload : [];
+        
+        // Vérifier et normaliser les données
+        const contacts = Array.isArray(action.payload) ? action.payload : [];
+        
+        // Seulement mettre à jour si on a des contacts ou si le tableau était vide avant
+        if (contacts.length > 0 || state.contacts.length === 0) {
+          state.contacts = contacts;
+          console.log(`Updated contacts store with ${contacts.length} contacts`);
+        } else {
+          console.log('Keeping existing contacts, received empty array');
+        }
+        
         if (!Array.isArray(action.payload)) {
           console.warn('Expected array for contacts, got:', typeof action.payload);
         }
@@ -224,10 +377,26 @@ const contactsSlice = createSlice({
       })
       .addCase(fetchContactRequests.fulfilled, (state, action) => {
         state.requestLoading = false;
+        
         // Assurer que les données sont correctement formatées avec des valeurs par défaut
         const data = action.payload || {};
-        state.incomingRequests = Array.isArray(data.incoming) ? data.incoming : [];
-        state.outgoingRequests = Array.isArray(data.outgoing) ? data.outgoing : [];
+        
+        // Vérification et normalisation des tableaux
+        const incoming = Array.isArray(data.incoming) ? data.incoming : [];
+        const outgoing = Array.isArray(data.outgoing) ? data.outgoing : [];
+        
+        // Mise à jour seulement si on a des données ou si les tableaux étaient vides
+        if (incoming.length > 0 || state.incomingRequests.length === 0) {
+          state.incomingRequests = incoming;
+        } else {
+          console.log('Keeping existing incoming requests, received empty array');
+        }
+        
+        if (outgoing.length > 0 || state.outgoingRequests.length === 0) {
+          state.outgoingRequests = outgoing;
+        } else {
+          console.log('Keeping existing outgoing requests, received empty array');
+        }
         
         console.log('Updated state after fetching requests:', {
           incomingCount: state.incomingRequests.length,
@@ -237,9 +406,10 @@ const contactsSlice = createSlice({
       .addCase(fetchContactRequests.rejected, (state, action) => {
         state.requestLoading = false;
         state.requestError = action.payload || 'Failed to fetch contact requests';
-        // Réinitialiser les tableaux pour éviter d'afficher des données obsolètes
-        state.incomingRequests = [];
-        state.outgoingRequests = [];
+        
+        // Ne pas réinitialiser les tableaux en cas d'erreur pour préserver les données existantes
+        // En cas d'erreur 429 notamment, on veut garder les données précédentes
+        console.log('Error fetching contact requests, keeping existing data');
       })
       
       // Send Contact Request
@@ -276,16 +446,17 @@ const contactsSlice = createSlice({
       .addCase(acceptContactRequest.fulfilled, (state, action) => {
         state.requestLoading = false;
         
-        if (action.payload) {
+        if (action.payload && action.payload.contact) {
           // Ajouter aux contacts en évitant les doublons
-          const contactExists = state.contacts.some(contact => contact.id === action.payload.id);
+          const contactExists = state.contacts.some(contact => contact.id === action.payload.contact.id);
           if (!contactExists) {
-            state.contacts.push(action.payload);
+            state.contacts.push(action.payload.contact);
+            console.log('Added contact to state:', action.payload.contact);
           }
           
           // Supprimer de la liste des demandes entrantes
           state.incomingRequests = state.incomingRequests.filter(
-            request => request.id !== action.meta.arg
+            request => request.id !== action.payload.requestId
           );
         }
       })

@@ -314,44 +314,82 @@ const Contacts = () => {
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [lastRefresh, setLastRefresh] = useState(Date.now());
   
-  // Charger les contacts et les demandes au chargement initial ET toutes les 30 secondes
+  // Charger les contacts et les demandes au chargement initial ET toutes les 60 secondes (réduit la fréquence)
   useEffect(() => {
-    // Chargement initial
-    loadContactData();
+    console.log('Initializing Contacts component');
     
-    // Rafraîchissement automatique toutes les 30 secondes
+    // Chargement initial après un court délai pour éviter les trop nombreuses requêtes au démarrage
+    const initialTimeout = setTimeout(() => {
+      console.log('Initial contacts data load');
+      loadContactData();
+    }, 500);
+    
+    // Rafraîchissement automatique toutes les 60 secondes (augmenté pour réduire la charge)
     const intervalId = setInterval(() => {
+      console.log('Auto-refreshing contacts data');
       loadContactData(false); // false = ne pas afficher le loading
-    }, 30000);
+    }, 60000); // 60 secondes au lieu de 30
     
     // Nettoyage lors du démontage du composant
     return () => {
+      clearTimeout(initialTimeout);
       clearInterval(intervalId);
       // Nettoyer les erreurs et les notifications de succès
       dispatch(clearContactError());
       dispatch(clearRequestError());
       dispatch(clearRequestSuccess());
     };
-  }, [dispatch]);
+  }, []);
   
-  // Charger l'onglet des demandes entrantes par défaut s'il y en a
+  // Charger l'onglet des demandes entrantes par défaut s'il y en a, mais seulement la première fois
   useEffect(() => {
+    // Éviter un changement de tab automatique si l'utilisateur est déjà sur un autre tab
     if (incomingRequests && incomingRequests.length > 0 && activeTab === 'contacts') {
+      console.log('Auto-switching to incoming requests tab');
       setActiveTab('incoming');
     }
-  }, [incomingRequests, activeTab]);
+  }, []);
   
   const loadContactData = (showLoading = true) => {
+    // Vérifier si un chargement est déjà en cours pour éviter les requêtes simultanées
+    if (loading || requestLoading) {
+      console.log('Skipping contact data load, already in progress');
+      return;
+    }
+    
+    // Contrôler la fréquence de rechargement (pas plus d'une fois toutes les 3 secondes)
+    const now = Date.now();
+    if (now - lastRefresh < 3000) {
+      console.log('Skipping contact data load, too soon since last refresh');
+      return;
+    }
+    
     if (showLoading) {
       // Si nous voulons afficher l'indicateur de chargement
+      console.log('Loading contacts with loading indicator');
+      
+      // Exécuter les requêtes avec un léger décalage
       dispatch(fetchContacts());
-      dispatch(fetchContactRequests());
+      
+      // Retarder légèrement la deuxième requête pour réduire la charge
+      setTimeout(() => {
+        dispatch(fetchContactRequests());
+      }, 500);
     } else {
-      // Chargement silencieux
-      dispatch(fetchContacts()).catch(err => console.error('Error refreshing contacts:', err));
-      dispatch(fetchContactRequests()).catch(err => console.error('Error refreshing requests:', err));
+      // Chargement silencieux avec gestion d'erreur
+      console.log('Loading contacts silently');
+      
+      dispatch(fetchContacts())
+        .catch(err => console.error('Error refreshing contacts:', err));
+      
+      // Retarder légèrement la deuxième requête
+      setTimeout(() => {
+        dispatch(fetchContactRequests())
+          .catch(err => console.error('Error refreshing requests:', err));
+      }, 500);
     }
-    setLastRefresh(Date.now());
+    
+    setLastRefresh(now);
   };
   
   // Obtenir les éléments filtrés en fonction du terme de recherche
@@ -415,11 +453,18 @@ const Contacts = () => {
   // Handler pour accepter une demande de contact
   const handleAcceptRequest = async (requestId) => {
     try {
-      await dispatch(acceptContactRequest(requestId)).unwrap();
+      console.log(`Accepting contact request: ${requestId}`);
+      
+      // Nettoyer les messages d'erreur
+      dispatch(clearRequestError());
+      
+      // Appeler l'action Redux
+      const result = await dispatch(acceptContactRequest(requestId)).unwrap();
+      console.log('Accept contact response:', result);
       
       // Rafraîchir immédiatement pour mettre à jour l'interface
       setTimeout(() => {
-        loadContactData();
+        loadContactData(true); // Forcer le chargement avec indicateur
       }, 500); // Petit délai pour laisser le serveur traiter la demande
     } catch (error) {
       console.error('Failed to accept contact request:', error);
@@ -429,11 +474,18 @@ const Contacts = () => {
   // Handler pour rejeter une demande de contact
   const handleRejectRequest = async (requestId) => {
     try {
-      await dispatch(rejectContactRequest(requestId)).unwrap();
+      console.log(`Rejecting contact request: ${requestId}`);
+      
+      // Nettoyer les messages d'erreur
+      dispatch(clearRequestError());
+      
+      // Appeler l'action Redux
+      const result = await dispatch(rejectContactRequest(requestId)).unwrap();
+      console.log('Reject contact response:', result);
       
       // Rafraîchir immédiatement pour mettre à jour l'interface
       setTimeout(() => {
-        loadContactData();
+        loadContactData(true); // Forcer le chargement avec indicateur
       }, 500); // Petit délai pour laisser le serveur traiter la demande
     } catch (error) {
       console.error('Failed to reject contact request:', error);
@@ -492,6 +544,21 @@ const Contacts = () => {
     return date.toLocaleTimeString();
   };
   
+  // Prévenir les erreurs si les tableaux ne sont pas disponibles
+  const safeContacts = Array.isArray(contacts) ? contacts : [];
+  const safeIncomingRequests = Array.isArray(incomingRequests) ? incomingRequests : [];
+  const safeOutgoingRequests = Array.isArray(outgoingRequests) ? outgoingRequests : [];
+
+  // Debug - en cas d'erreur d'affichage
+  console.log('Rendering Contacts component with:', {
+    activeTab,
+    contactsCount: safeContacts.length,
+    incomingCount: safeIncomingRequests.length,
+    outgoingCount: safeOutgoingRequests.length,
+    loading,
+    requestLoading
+  });
+
   return (
     <ContactsContainer>
       <ContactsHeader>
@@ -591,15 +658,15 @@ const Contacts = () => {
           onClick={() => handleTabChange('contacts')}
         >
           <FiUserCheck /> Contacts
-          <TabBadge>{contacts?.length || 0}</TabBadge>
+          <TabBadge>{safeContacts.length}</TabBadge>
         </Tab>
         <Tab 
           active={activeTab === 'incoming'} 
           onClick={() => handleTabChange('incoming')}
         >
           <FiUserPlus /> Incoming Requests
-          {incomingRequests && incomingRequests.length > 0 && (
-            <TabBadge>{incomingRequests.length}</TabBadge>
+          {safeIncomingRequests.length > 0 && (
+            <TabBadge>{safeIncomingRequests.length}</TabBadge>
           )}
         </Tab>
         <Tab 
@@ -607,8 +674,8 @@ const Contacts = () => {
           onClick={() => handleTabChange('outgoing')}
         >
           <FiClock /> Outgoing Requests
-          {outgoingRequests && outgoingRequests.length > 0 && (
-            <TabBadge>{outgoingRequests.length}</TabBadge>
+          {safeOutgoingRequests.length > 0 && (
+            <TabBadge>{safeOutgoingRequests.length}</TabBadge>
           )}
         </Tab>
         <Tab 
@@ -630,24 +697,26 @@ const Contacts = () => {
         />
       </SearchContainer>
       
-      {/* Debug information */}
+      
+      {/* Debug info visible only when debug mode is on */}
       <DebugInfo visible={showDebugInfo}>
+        <div>Active Tab: {activeTab}</div>
         <div>Last refresh: {new Date(lastRefresh).toLocaleString()}</div>
-        <div>Contacts: {JSON.stringify(contacts?.length || 0)}</div>
-        <div>Incoming requests: {JSON.stringify(incomingRequests?.length || 0)}</div>
-        <div>Outgoing requests: {JSON.stringify(outgoingRequests?.length || 0)}</div>
+        <div>Contacts: {safeContacts.length}</div>
+        <div>Incoming requests: {safeIncomingRequests.length}</div>
+        <div>Outgoing requests: {safeOutgoingRequests.length}</div>
         <div>Loading: {JSON.stringify(loading)}</div>
         <div>Request loading: {JSON.stringify(requestLoading)}</div>
         <div>Error: {JSON.stringify(error)}</div>
         <div>Request error: {JSON.stringify(requestError)}</div>
-        <div>First incoming request: {JSON.stringify(incomingRequests?.[0] || null)}</div>
+        <div>Filter found: {filteredItems.length} items</div>
       </DebugInfo>
       
       {(loading || requestLoading) && filteredItems.length === 0 ? (
         <EmptyState>
           <LoadingIndicator>
             <FiRefreshCw size={24} />
-            <p>Loading...</p>
+            <p>Loading contacts...</p>
           </LoadingIndicator>
         </EmptyState>
       ) : filteredItems.length > 0 ? (

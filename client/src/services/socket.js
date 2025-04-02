@@ -86,12 +86,40 @@ const socketService = {
     socket.off('group-message');
     socket.off('message-delivered');
     socket.off('typing');
+    socket.off('error');
+
+    // Ajouter un gestionnaire d'erreur général
+    socket.on('error', (error) => {
+      console.error('Socket error received:', error);
+    });
 
     // Ajout des nouveaux gestionnaires
-    if (messageHandler) socket.on('private-message', messageHandler);
-    if (groupMessageHandler) socket.on('group-message', groupMessageHandler);
-    if (deliveryHandler) socket.on('message-delivered', deliveryHandler);
-    if (typingHandler) socket.on('typing', typingHandler);
+    if (messageHandler) {
+      socket.on('private-message', (data) => {
+        console.log('Socket received private message:', data);
+        messageHandler(data);
+      });
+    }
+    
+    if (groupMessageHandler) {
+      socket.on('group-message', (data) => {
+        console.log('Socket received group message:', data);
+        groupMessageHandler(data);
+      });
+    }
+    
+    if (deliveryHandler) {
+      socket.on('message-delivered', (data) => {
+        console.log('Socket received delivery confirmation:', data);
+        deliveryHandler(data);
+      });
+    }
+    
+    if (typingHandler) {
+      socket.on('typing', (data) => {
+        typingHandler(data);
+      });
+    }
 
     return true;
   },
@@ -125,7 +153,15 @@ const socketService = {
       return false;
     }
 
-    socket.emit('private-message', messageData);
+    console.log('Emitting private message via socket:', messageData);
+    
+    // Ajouter un timestamp s'il n'existe pas déjà
+    const dataToSend = {
+      ...messageData,
+      timestamp: messageData.timestamp || Date.now()
+    };
+    
+    socket.emit('private-message', dataToSend);
     return true;
   },
 
@@ -136,7 +172,15 @@ const socketService = {
       return false;
     }
 
-    socket.emit('group-message', messageData);
+    console.log('Emitting group message via socket:', messageData);
+    
+    // Ajouter un timestamp s'il n'existe pas déjà
+    const dataToSend = {
+      ...messageData,
+      timestamp: messageData.timestamp || Date.now()
+    };
+    
+    socket.emit('group-message', dataToSend);
     return true;
   },
 

@@ -46,14 +46,39 @@ app.use(geoRestriction({
   strictMode: process.env.GEO_STRICT_MODE === 'true'
 }));
 
-// Rate limiting
-const limiter = rateLimit({
+// Rate limiting - global
+const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per window
+  max: 200, // Limite globale augmentée
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  message: { success: false, message: 'Too many requests, please try again later' }
 });
-app.use('/api/', limiter);
+
+// Rate limiting - plus strict pour les routes d'authentification (protection contre brute force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit each IP to 20 login/register requests per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many authentication attempts, please try again later' }
+});
+
+// Rate limiting - plus souple pour les routes de consultation
+const viewLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // Limit each IP to 30 requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests, please try again after a short pause' }
+});
+
+// Appliquer les limiteurs selon les routes
+app.use('/api/auth', authLimiter);
+app.use('/api/users/contacts', viewLimiter);
+app.use('/api/users/contact-requests', viewLimiter);
+app.use('/api/messages', viewLimiter);
+app.use('/api/', globalLimiter);
 
 // API routes
 app.use('/api', routes);

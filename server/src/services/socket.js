@@ -130,37 +130,54 @@ module.exports = (io) => {
     // Handle private messages
     socket.on('private-message', async (data) => {
       try {
-        const { recipientId, message, encryptedKey } = data;
+        console.log('Received private message from socket:', {
+          user: socket.user.username,
+          recipient: data.recipientId,
+          hasEncryptedKey: !!data.encryptedKey,
+          hasMetadata: !!data.metadata
+        });
+        
+        const { recipientId, message, encryptedKey, metadata } = data;
         
         // Validation de base
         if (!recipientId || !message) {
+          console.error('Invalid message data received:', data);
           socket.emit('error', { message: 'Invalid message data' });
           return;
         }
         
-        // Store message in Redis
+        // Store message in Redis with all the information
         const messageId = await storeMessage({
           senderId: userId,
           recipientId,
           conversationId: [userId, recipientId].sort().join(':'),
           message,
           encryptedKey,
+          metadata,
           isRead: false,
+          timestamp: data.timestamp || Date.now(),
         });
+        
+        console.log(`Message stored in Redis with ID: ${messageId}`);
         
         // Check if recipient is online
         const recipientSocketId = activeConnections.get(recipientId);
         
         if (recipientSocketId) {
-          // Send message to recipient
+          console.log(`Recipient ${recipientId} is online, sending message directly`);
+          
+          // Send message to recipient with all encryption information
           io.to(`user:${recipientId}`).emit('private-message', {
             id: messageId,
             senderId: userId,
             senderUsername: socket.user.username,
             message,
             encryptedKey,
-            timestamp: Date.now(),
+            metadata,
+            timestamp: data.timestamp || Date.now(),
           });
+        } else {
+          console.log(`Recipient ${recipientId} is offline, message will be delivered later`);
         }
         
         // Confirm delivery to sender
@@ -168,34 +185,47 @@ module.exports = (io) => {
           id: messageId,
           recipientId,
           delivered: !!recipientSocketId,
+          timestamp: Date.now()
         });
       } catch (error) {
         console.error('Error processing private message:', error);
-        socket.emit('error', { message: 'Failed to send message' });
+        socket.emit('error', { message: 'Failed to send message: ' + error.message });
       }
     });
     
     // Handle group messages
     socket.on('group-message', async (data) => {
       try {
-        const { groupId, message, encryptedKeys } = data;
+        console.log('Received group message from socket:', {
+          user: socket.user.username,
+          group: data.groupId,
+          hasEncryptedKeys: !!data.encryptedKeys && Object.keys(data.encryptedKeys || {}).length > 0,
+          hasMetadata: !!data.metadata
+        });
+        
+        const { groupId, message, encryptedKeys, metadata } = data;
         
         // Validation
         if (!groupId || !message) {
+          console.error('Invalid group message data received:', data);
           socket.emit('error', { message: 'Invalid group message data' });
           return;
         }
         
-        // Store message in Redis
+        // Store message in Redis with all information
         const messageId = await storeMessage({
           senderId: userId,
           groupId,
           conversationId: `group:${groupId}`,
           message,
           encryptedKeys,
+          metadata,
+          timestamp: data.timestamp || Date.now(),
         });
         
-        // Broadcast message to group
+        console.log(`Group message stored in Redis with ID: ${messageId} for group: ${groupId}`);
+        
+        // Broadcast message to group with all encryption information
         io.to(`group:${groupId}`).emit('group-message', {
           id: messageId,
           senderId: userId,
@@ -203,11 +233,14 @@ module.exports = (io) => {
           groupId,
           message,
           encryptedKeys,
-          timestamp: Date.now(),
+          metadata,
+          timestamp: data.timestamp || Date.now(),
         });
+        
+        console.log(`Group message ${messageId} broadcast to group: ${groupId}`);
       } catch (error) {
         console.error('Error processing group message:', error);
-        socket.emit('error', { message: 'Failed to send group message' });
+        socket.emit('error', { message: 'Failed to send group message: ' + error.message });
       }
     });
     

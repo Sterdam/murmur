@@ -135,6 +135,8 @@ const Chat = () => {
   useEffect(() => {
     if (!conversationId) return;
     
+    console.log('Setting up conversation:', conversationId);
+    
     // First, determine if this is a group conversation
     const groupChat = conversationId.startsWith('group:');
     setIsGroup(groupChat);
@@ -144,38 +146,57 @@ const Chat = () => {
     if (groupChat) {
       // For group chats, extract the groupId and find the group
       const groupId = conversationId.replace('group:', '');
+      console.log('Looking for group with ID:', groupId);
+      
       const group = groups.find(g => g.id === groupId);
       if (group) {
+        console.log('Found group:', group.name);
         currentConversation = {
           ...group,
           isGroup: true
         };
+      } else {
+        console.log('Group not found in:', groups);
       }
     } else {
       // For direct chats, the conversation ID is the sorted user IDs joined with ':'
       if (user && contacts.length > 0) {
         // Find the other user's ID in the conversation
         const participants = conversationId.split(':');
+        console.log('Conversation participants:', participants, 'Current user:', user.id);
+        
         const otherUserId = participants[0] === user.id ? participants[1] : participants[0];
+        console.log('Looking for contact with ID:', otherUserId);
         
         // Find the contact with this ID
         const contact = contacts.find(c => c.id === otherUserId);
         if (contact) {
+          console.log('Found contact:', contact.username);
           currentConversation = {
             ...contact,
             isGroup: false
           };
+        } else {
+          console.log('Contact not found in:', contacts.map(c => `${c.username}(${c.id})`));
         }
       }
     }
     
+    console.log('Setting conversation:', currentConversation);
     setConversation(currentConversation);
     
     // Set active conversation
     dispatch(setActiveConversation(conversationId));
     
     // Fetch messages
-    dispatch(fetchConversationMessages(conversationId));
+    console.log('Fetching messages for conversation:', conversationId);
+    dispatch(fetchConversationMessages(conversationId))
+      .then(result => {
+        console.log('Messages fetch result:', result);
+      })
+      .catch(error => {
+        console.error('Failed to fetch messages:', error);
+      });
     
     return () => {
       // Clear active conversation when unmounting

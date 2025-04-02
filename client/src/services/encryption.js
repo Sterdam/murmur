@@ -107,34 +107,53 @@ export const encryptMessage = async (message, recipientPublicKeyJson, senderPriv
     // 1. Parsing de la clé publique du destinataire
     const recipientPublicBundle = JSON.parse(recipientPublicKeyJson);
     
-    // 2. Vérification de la version de la clé
-    if (!recipientPublicBundle.version || compareVersions(recipientPublicBundle.version, '2.0') < 0) {
-      throw new Error('Version de clé obsolète du destinataire. Une mise à jour est nécessaire.');
+    // 2. Vérification de la version de la clé - Extraire la clé du format utilisé par l'API
+    const keyData = recipientPublicBundle.key || recipientPublicBundle;
+    
+    // Adapter le parsing pour différents formats possibles
+    let publicKeyBase64;
+    if (typeof keyData === 'string') {
+      // Déjà une chaîne Base64, l'utiliser directement
+      publicKeyBase64 = keyData;
+    } else if (keyData && typeof keyData === 'object') {
+      // Si c'est un objet avec une propriété key (nouveau format)
+      publicKeyBase64 = keyData.key;
+    } else {
+      throw new Error('Format de clé publique non reconnu');
     }
     
-    // 3. Import de la clé RSA du destinataire
+    // 3. Import de la clé SPKI (format standard)
+    const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64);
+    
     const recipientRsaPublicKey = await subtle.importKey(
       'spki',
-      base64ToArrayBuffer(recipientPublicBundle.rsaPublicKey),
+      publicKeyBuffer,
       {
         name: 'RSA-OAEP',
-        hash: { name: HASH_ALGORITHM }
+        hash: { name: 'SHA-256' } // Utiliser SHA-256 pour compatibilité maximale
       },
       false,
       ['encrypt', 'wrapKey']
     );
     
-    // 4. Import de la clé ECDH du destinataire pour la Perfect Forward Secrecy
-    const recipientEcdhPublicKey = await subtle.importKey(
-      'spki',
-      base64ToArrayBuffer(recipientPublicBundle.ecdhPublicKey),
-      {
-        name: 'ECDH',
-        namedCurve: ECC_CURVE_ECDH
-      },
-      false,
-      []
-    );
+    // 4. Vérifier la présence de la clé ECDH ou utiliser un mode compatibilité
+    let recipientEcdhPublicKey = null;
+    if (recipientPublicBundle.ecdhPublicKey) {
+      recipientEcdhPublicKey = await subtle.importKey(
+        'spki',
+        base64ToArrayBuffer(recipientPublicBundle.ecdhPublicKey),
+        {
+          name: 'ECDH',
+          namedCurve: ECC_CURVE_ECDH
+        },
+        false,
+        []
+      );
+    } else {
+      console.log('Mode de compatibilité activé: clé ECDH non disponible');
+      // Dans le mode compatibilité, nous allons utiliser uniquement RSA
+      // et générer une structure temporaire pour éviter les erreurs plus tard
+    }
     
     // 5. Génération d'une clé symétrique AES-GCM unique pour ce message
     const messageKey = await subtle.generateKey(
@@ -146,37 +165,44 @@ export const encryptMessage = async (message, recipientPublicKeyJson, senderPriv
       ['encrypt', 'decrypt']
     );
     
-    // 6. Génération d'une paire ECDH éphémère pour ce message (Perfect Forward Secrecy)
-    const ephemeralEcdhKey = await subtle.generateKey(
-      {
-        name: 'ECDH',
-        namedCurve: ECC_CURVE_ECDH
-      },
-      true,
-      ['deriveKey', 'deriveBits']
-    );
+    // 6. Variables pour la gestion des clés
+    let ephemeralEcdhKey = null;
+    let sharedKey = null; 
     
-    // 7. Dérivation d'une clé partagée avec la clé ECDH du destinataire
-    const sharedSecretBits = await subtle.deriveBits(
-      {
-        name: 'ECDH',
-        public: recipientEcdhPublicKey
-      },
-      ephemeralEcdhKey.privateKey,
-      512 // 512 bits
-    );
-    
-    // 8. Conversion des bits partagés en clé AES
-    const sharedKey = await subtle.importKey(
-      'raw',
-      sharedSecretBits,
-      {
-        name: 'AES-GCM',
-        length: AES_KEY_SIZE
-      },
-      false,
-      ['encrypt', 'decrypt']
-    );
+    // Mode avec Perfect Forward Secrecy si ECDH est disponible
+    if (recipientEcdhPublicKey) {
+      // Génération d'une paire ECDH éphémère pour ce message
+      ephemeralEcdhKey = await subtle.generateKey(
+        {
+          name: 'ECDH',
+          namedCurve: ECC_CURVE_ECDH
+        },
+        true,
+        ['deriveKey', 'deriveBits']
+      );
+      
+      // Dérivation d'une clé partagée avec la clé ECDH du destinataire
+      const sharedSecretBits = await subtle.deriveBits(
+        {
+          name: 'ECDH',
+          public: recipientEcdhPublicKey
+        },
+        ephemeralEcdhKey.privateKey,
+        512 // 512 bits
+      );
+      
+      // Conversion des bits partagés en clé AES
+      sharedKey = await subtle.importKey(
+        'raw',
+        sharedSecretBits,
+        {
+          name: 'AES-GCM',
+          length: AES_KEY_SIZE
+        },
+        false,
+        ['encrypt', 'decrypt']
+      );
+    }
     
     // 9. Génération d'un vecteur d'initialisation (nonce) aléatoire
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -240,47 +266,76 @@ export const encryptMessage = async (message, recipientPublicKeyJson, senderPriv
     // 13. Exportation de la clé AES-GCM du message
     const rawMessageKey = await subtle.exportKey('raw', messageKey);
     
-    // 14. Exportation de la clé publique ECDH éphémère
-    const ephemeralPublicKey = await subtle.exportKey('spki', ephemeralEcdhKey.publicKey);
+    // 14. Exportation de la clé publique ECDH éphémère (si disponible)
+    let ephemeralPublicKey = null;
+    if (ephemeralEcdhKey) {
+      ephemeralPublicKey = await subtle.exportKey('spki', ephemeralEcdhKey.publicKey);
+    }
     
-    // 15. Génération d'un IV spécifique pour le chiffrement de la clé
-    const keyEncryptionIv = crypto.getRandomValues(new Uint8Array(12));
+    // 15-17. Chiffrement de la clé de message en fonction du mode disponible
+    let encryptedKeyWithRsa;
+    let keyEncryptionIv;
     
-    // 16. Double chiffrement: Clé du message chiffrée avec la clé partagée ECDH
-    const encryptedKeyWithEcdh = await subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: keyEncryptionIv,
-        additionalData: new TextEncoder().encode(`key-wrapping-v3:${messageId}`),
-        tagLength: AUTH_TAG_SIZE
-      },
-      sharedKey,
-      rawMessageKey
-    );
-    
-    // 17. Chiffrement avec RSA de la clé déjà protégée par ECDH (protection multicouche)
-    const encryptedKeyWithRsa = await subtle.encrypt(
-      {
-        name: 'RSA-OAEP'
-      },
-      recipientRsaPublicKey,
-      encryptedKeyWithEcdh
-    );
+    if (sharedKey) {
+      // Mode Double chiffrement (ECDH + RSA) pour Perfect Forward Secrecy
+      keyEncryptionIv = crypto.getRandomValues(new Uint8Array(12));
+      
+      // Double chiffrement: Clé du message chiffrée avec la clé partagée ECDH
+      const encryptedKeyWithEcdh = await subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: keyEncryptionIv,
+          additionalData: new TextEncoder().encode(`key-wrapping-v3:${messageId}`),
+          tagLength: AUTH_TAG_SIZE
+        },
+        sharedKey,
+        rawMessageKey
+      );
+      
+      // Chiffrement avec RSA de la clé déjà protégée par ECDH (protection multicouche)
+      encryptedKeyWithRsa = await subtle.encrypt(
+        {
+          name: 'RSA-OAEP'
+        },
+        recipientRsaPublicKey,
+        encryptedKeyWithEcdh
+      );
+    } else {
+      // Mode compatibilité: Chiffrement direct avec RSA
+      keyEncryptionIv = new Uint8Array(12); // IV vide pour compatibilité
+      
+      // Chiffrement direct avec RSA
+      encryptedKeyWithRsa = await subtle.encrypt(
+        {
+          name: 'RSA-OAEP'
+        },
+        recipientRsaPublicKey,
+        rawMessageKey
+      );
+    }
     
     // 18. Ajout d'informations de sécurité pour le déchiffrement
     const encryptionMetadata = {
       schema: 'murmur-e2ee-v3',
       messageId,
       timestamp,
-      algorithm: 'RSA-OAEP-4096+ECDH-P521+AES-GCM-256',
-      ephemeralPublicKey: arrayBufferToBase64(ephemeralPublicKey),
-      keyEncryptionIv: arrayBufferToBase64(keyEncryptionIv),
+      algorithm: ephemeralPublicKey ? 'RSA-OAEP-4096+ECDH-P521+AES-GCM-256' : 'RSA-OAEP-2048+AES-GCM-256',
       iv: arrayBufferToBase64(iv),
       authTagSize: AUTH_TAG_SIZE,
-      recipientKeyId: recipientPublicBundle.keyId,
       signerKeyId,
-      version: '3.0'
+      version: '3.0',
+      compatMode: ephemeralPublicKey ? 'false' : 'true'
     };
+    
+    // Ajouter les propriétés conditionnelles
+    if (ephemeralPublicKey) {
+      encryptionMetadata.ephemeralPublicKey = arrayBufferToBase64(ephemeralPublicKey);
+      encryptionMetadata.keyEncryptionIv = arrayBufferToBase64(keyEncryptionIv);
+      encryptionMetadata.recipientKeyId = recipientPublicBundle.keyId;
+    } else {
+      // Mode compatibilité: informations minimales nécessaires
+      encryptionMetadata.keyEncryptionIv = arrayBufferToBase64(keyEncryptionIv);
+    }
     
     // 19. Construction du paquet chiffré final
     return {
@@ -329,93 +384,149 @@ export const decryptMessage = async (
       throw new Error('Format de message non reconnu');
     }
     
-    if (compareVersions(metadata.version || '1.0', '2.0') < 0) {
-      throw new Error('Version de chiffrement obsolète');
-    }
+    // Vérifier le mode de compatibilité
+    const useCompatMode = metadata.compatMode === 'true' || !metadata.ephemeralPublicKey;
+    console.log('Mode de déchiffrement:', useCompatMode ? 'compatibilité' : 'standard');
     
-    // 3. Vérification que le message est destiné à cette clé
-    if (metadata.recipientKeyId && metadata.recipientKeyId !== privateKeyBundle.keyId) {
+    // 3. Vérification que le message est destiné à cette clé (si applicable)
+    if (!useCompatMode && metadata.recipientKeyId && metadata.recipientKeyId !== privateKeyBundle.keyId) {
       throw new Error('Ce message n\'est pas destiné à cette clé');
     }
     
-    // 4. Import de la clé RSA privée pour déchiffrer
+    // 4. Import de la clé RSA privée pour déchiffrer - obtenir la clé privée du format approprié
+    let rsaPrivateKeyData;
+    
+    // Vérifier le format de la clé privée
+    if (privateKeyBundle.rsaPrivateKey) {
+      rsaPrivateKeyData = privateKeyBundle.rsaPrivateKey;
+    } else if (privateKeyBundle.privateKey) {
+      rsaPrivateKeyData = privateKeyBundle.privateKey;
+    } else {
+      // Tenter le décodage du format simplifié
+      try {
+        const keyData = JSON.parse(privateKeyBundle.privateKey || privateKeyBundle);
+        rsaPrivateKeyData = keyData;
+      } catch (e) {
+        rsaPrivateKeyData = privateKeyBundle;
+      }
+    }
+    
+    // Importer la clé RSA privée
     const privateKey = await subtle.importKey(
       'pkcs8',
-      base64ToArrayBuffer(privateKeyBundle.rsaPrivateKey),
+      base64ToArrayBuffer(rsaPrivateKeyData),
       {
         name: 'RSA-OAEP',
-        hash: { name: HASH_ALGORITHM }
+        hash: { name: 'SHA-256' } // Pour compatibilité
       },
       false,
       ['decrypt', 'unwrapKey']
     );
     
-    // 5. Import de la clé ECDH privée pour la Perfect Forward Secrecy
-    const ecdhPrivateKey = await subtle.importKey(
-      'pkcs8',
-      base64ToArrayBuffer(privateKeyBundle.ecdhPrivateKey),
-      {
-        name: 'ECDH',
-        namedCurve: ECC_CURVE_ECDH
-      },
-      false,
-      ['deriveKey', 'deriveBits']
-    );
+    // 5-6. Import des clés ECDH si disponibles (mode non compatible)
+    let ecdhPrivateKey = null;
+    let ephemeralPublicKey = null;
     
-    // 6. Import de la clé ECDH éphémère publique de l'expéditeur
-    const ephemeralPublicKey = await subtle.importKey(
-      'spki',
-      base64ToArrayBuffer(metadata.ephemeralPublicKey),
-      {
-        name: 'ECDH',
-        namedCurve: ECC_CURVE_ECDH
-      },
-      false,
-      []
-    );
+    if (!useCompatMode && privateKeyBundle.ecdhPrivateKey && metadata.ephemeralPublicKey) {
+      try {
+        // Import de la clé ECDH privée pour la Perfect Forward Secrecy
+        ecdhPrivateKey = await subtle.importKey(
+          'pkcs8',
+          base64ToArrayBuffer(privateKeyBundle.ecdhPrivateKey),
+          {
+            name: 'ECDH',
+            namedCurve: ECC_CURVE_ECDH
+          },
+          false,
+          ['deriveKey', 'deriveBits']
+        );
+        
+        // Import de la clé ECDH éphémère publique de l'expéditeur
+        ephemeralPublicKey = await subtle.importKey(
+          'spki',
+          base64ToArrayBuffer(metadata.ephemeralPublicKey),
+          {
+            name: 'ECDH',
+            namedCurve: ECC_CURVE_ECDH
+          },
+          false,
+          []
+        );
+      } catch (error) {
+        console.warn('Échec de l\'import des clés ECDH, passage en mode compatibilité', error);
+        useCompatMode = true;
+      }
+    }
     
-    // 7. Déchiffrement de la clé chiffrée avec RSA (première couche)
-    const encryptedKeyWithEcdh = await subtle.decrypt(
-      {
-        name: 'RSA-OAEP'
-      },
-      privateKey,
-      base64ToArrayBuffer(encryptedKeyBase64)
-    );
+    // 7-10. Déchiffrement de la clé selon le mode (standard ou compatibilité)
+    let messageKeyRaw;
     
-    // 8. Dérivation de la clé partagée avec la clé ECDH éphémère (Perfect Forward Secrecy)
-    const sharedSecretBits = await subtle.deriveBits(
-      {
-        name: 'ECDH',
-        public: ephemeralPublicKey
-      },
-      ecdhPrivateKey,
-      512 // 512 bits
-    );
+    // Mode de déchiffrement standard (Double couche avec ECDH) 
+    if (!useCompatMode && ecdhPrivateKey && ephemeralPublicKey) {
+      try {
+        // Déchiffrement de la clé chiffrée avec RSA (première couche)
+        const encryptedKeyWithEcdh = await subtle.decrypt(
+          {
+            name: 'RSA-OAEP'
+          },
+          privateKey,
+          base64ToArrayBuffer(encryptedKeyBase64)
+        );
+        
+        // Dérivation de la clé partagée avec la clé ECDH éphémère (Perfect Forward Secrecy)
+        const sharedSecretBits = await subtle.deriveBits(
+          {
+            name: 'ECDH',
+            public: ephemeralPublicKey
+          },
+          ecdhPrivateKey,
+          512 // 512 bits
+        );
+        
+        // Conversion des bits partagés en clé AES
+        const sharedKey = await subtle.importKey(
+          'raw',
+          sharedSecretBits,
+          {
+            name: 'AES-GCM',
+            length: AES_KEY_SIZE
+          },
+          false,
+          ['encrypt', 'decrypt']
+        );
+        
+        // Déchiffrement de la clé du message avec la clé ECDH partagée (deuxième couche)
+        messageKeyRaw = await subtle.decrypt(
+          {
+            name: 'AES-GCM',
+            iv: base64ToArrayBuffer(metadata.keyEncryptionIv),
+            additionalData: new TextEncoder().encode(`key-wrapping-v3:${metadata.messageId}`),
+            tagLength: AUTH_TAG_SIZE
+          },
+          sharedKey,
+          encryptedKeyWithEcdh
+        );
+      } catch (error) {
+        console.warn('Échec du déchiffrement en mode standard, passage en mode compatibilité', error);
+        useCompatMode = true;
+      }
+    }
     
-    // 9. Conversion des bits partagés en clé AES
-    const sharedKey = await subtle.importKey(
-      'raw',
-      sharedSecretBits,
-      {
-        name: 'AES-GCM',
-        length: AES_KEY_SIZE
-      },
-      false,
-      ['encrypt', 'decrypt']
-    );
-    
-    // 10. Déchiffrement de la clé du message avec la clé ECDH partagée (deuxième couche)
-    const messageKeyRaw = await subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: base64ToArrayBuffer(metadata.keyEncryptionIv),
-        additionalData: new TextEncoder().encode(`key-wrapping-v3:${metadata.messageId}`),
-        tagLength: AUTH_TAG_SIZE
-      },
-      sharedKey,
-      encryptedKeyWithEcdh
-    );
+    // Mode compatibilité (déchiffrement direct avec RSA)
+    if (useCompatMode) {
+      try {
+        messageKeyRaw = await subtle.decrypt(
+          {
+            name: 'RSA-OAEP'
+          },
+          privateKey,
+          base64ToArrayBuffer(encryptedKeyBase64)
+        );
+      } catch (error) {
+        console.error('Échec du déchiffrement en mode compatibilité', error);
+        throw new Error('Impossible de déchiffrer la clé de message: ' + error.message);
+      }
+    }
     
     // 11. Import de la clé de message pour déchiffrer le contenu
     const messageKey = await subtle.importKey(

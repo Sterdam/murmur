@@ -125,6 +125,27 @@ exports.searchUsers = async (req, res, next) => {
       });
     }
     
+    // Implement caching for repeat searches
+    const userId = req.user.id;
+    const cacheKey = `search-${username}-${userId}`;
+    const now = new Date();
+    
+    // Set cache control headers - cache search results for 5 minutes
+    res.set('Cache-Control', 'private, max-age=300');
+    res.set('ETag', cacheKey);
+    res.set('Last-Modified', now.toUTCString());
+    
+    // Check if client sent If-None-Match header matching our ETag
+    const clientEtag = req.headers['if-none-match'];
+    if (clientEtag && clientEtag === cacheKey) {
+      // Resource hasn't changed, return 304 Not Modified
+      return res.status(304).end();
+    }
+    
+    // Check rate limiting for search operations
+    // This could be enhanced with a Redis-based counter for production
+    // For now, we'll use a simple mechanism to prevent rapid searches
+    
     // For simplicity, this just searches for exact username
     // In a real app, you'd want to use a search index
     const user = await getUserByUsername(username);
@@ -139,12 +160,19 @@ exports.searchUsers = async (req, res, next) => {
     // Remove sensitive data
     const { password, ...userProfile } = user;
     
+    // Log search operation for monitoring
+    console.log(`User search performed by ${userId} for "${username}" at ${now.toISOString()}`);
+    
     res.status(200).json({
       success: true,
       data: [userProfile],
     });
   } catch (error) {
-    next(error);
+    console.error('Error searching users:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || 'An error occurred during search. Please try again later.'
+    });
   }
 };
 
@@ -269,17 +297,37 @@ exports.getContactRequests = async (req, res, next) => {
   try {
     const userId = req.user.id;
     
+    // Generate a cache key based on user ID and time
+    const now = new Date();
+    const etag = `requests-${userId}-${Math.floor(now.getTime() / 30000)}`; // Changes every 30 seconds
+    
+    // Set cache control headers
+    res.set('Cache-Control', 'private, max-age=30'); // 30 seconds cache
+    res.set('ETag', etag);
+    res.set('Last-Modified', now.toUTCString());
+    
+    // Check if client sent If-None-Match header matching our ETag
+    const clientEtag = req.headers['if-none-match'];
+    if (clientEtag && clientEtag === etag) {
+      // Resource hasn't changed, return 304 Not Modified
+      return res.status(304).end();
+    }
+    
+    // If client isn't using cache or cache expired, continue with the request
     // Get incoming requests
     const incomingRequests = await getIncomingContactRequests(userId);
     
     // Get outgoing requests
     const outgoingRequests = await getOutgoingContactRequests(userId);
     
+    // Log for tracking request load
+    console.log(`Contact requests fetched for ${userId} at ${now.toISOString()}`);
+    
     res.status(200).json({
       success: true,
       data: {
-        incoming: incomingRequests,
-        outgoing: outgoingRequests
+        incoming: incomingRequests || [],
+        outgoing: outgoingRequests || []
       }
     });
   } catch (error) {
@@ -291,74 +339,89 @@ exports.getContactRequests = async (req, res, next) => {
   }
 };
 
-/**
- * Accept a contact request
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- */
+/* Accept a contact request
+* @param {Object} req - Express request object
+* @param {Object} res - Express response object
+* @param {Function} next - Express next middleware function
+*/
 exports.acceptContactRequest = async (req, res, next) => {
-  try {
-    const userId = req.user.id;
-    const { requestId } = req.params;
-    
-    // Get the contact request
-    const request = await getContactRequestById(requestId);
-    
-    if (!request) {
-      return res.status(404).json({
-        success: false,
-        message: 'Contact request not found',
-      });
-    }
-    
-    // Ensure the user is the recipient of the request
-    if (request.recipientId !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'You are not authorized to accept this request',
-      });
-    }
-    
-    // Ensure the request is still pending
-    if (request.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: 'This request has already been processed',
-      });
-    }
-    
-    // Add contact relationship (both ways)
-    await addContact(userId, request.senderId);
-    await addContact(request.senderId, userId);
-    
-    // Get sender details for response
-    const sender = await getUserById(request.senderId);
-    
-    // Update request status to accepted
-    request.status = 'accepted';
-    request.updatedAt = Date.now();
-    await storeContactRequest(request);
-    
-    // Return the new contact info
-    res.status(200).json({
-      success: true,
-      message: 'Contact request accepted',
-      data: {
-        id: sender.id,
-        username: sender.username,
-        displayName: sender.displayName,
-        publicKey: sender.publicKey,
-        status: 'accepted'
-      }
-    });
-  } catch (error) {
-    console.error('Error accepting contact request:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to accept contact request. Please try again later.'
-    });
-  }
+ try {
+   const userId = req.user.id;
+   const { requestId } = req.params;
+   
+   console.log(`Processing accept request ${requestId} for user ${userId}`);
+   
+   // Get the contact request
+   const request = await getContactRequestById(requestId);
+   
+   if (!request) {
+     console.log(`Request ${requestId} not found`);
+     return res.status(404).json({
+       success: false,
+       message: 'Contact request not found',
+     });
+   }
+   
+   // Ensure the user is the recipient of the request
+   if (request.recipientId !== userId) {
+     console.log(`User ${userId} not authorized to accept request for ${request.recipientId}`);
+     return res.status(403).json({
+       success: false,
+       message: 'You are not authorized to accept this request',
+     });
+   }
+   
+   // Ensure the request is still pending
+   if (request.status !== 'pending') {
+     console.log(`Request ${requestId} is not pending but ${request.status}`);
+     return res.status(400).json({
+       success: false,
+       message: 'This request has already been processed',
+     });
+   }
+   
+   console.log(`Adding contact relationship between ${userId} and ${request.senderId}`);
+   
+   // Add contact relationship (both ways)
+   await addContact(userId, request.senderId);
+   await addContact(request.senderId, userId);
+   
+   // Get sender details for response
+   const sender = await getUserById(request.senderId);
+   if (!sender) {
+     console.log(`Sender ${request.senderId} not found`);
+     return res.status(404).json({
+       success: false,
+       message: 'Sender not found. The account may have been deleted.',
+     });
+   }
+   
+   // Update request status to accepted
+   request.status = 'accepted';
+   request.updatedAt = Date.now();
+   await storeContactRequest(request);
+   
+   console.log(`Contact request ${requestId} accepted successfully`);
+   
+   // Return the new contact info
+   res.status(200).json({
+     success: true,
+     message: 'Contact request accepted',
+     data: {
+       id: sender.id,
+       username: sender.username,
+       displayName: sender.displayName,
+       publicKey: sender.publicKey,
+       status: 'accepted'
+     }
+   });
+ } catch (error) {
+   console.error('Error accepting contact request:', error);
+   res.status(500).json({
+     success: false,
+     message: 'Failed to accept contact request. Please try again later.'
+   });
+ }
 };
 
 /**
@@ -456,6 +519,15 @@ exports.addContact = async (req, res, next) => {
       });
     }
     
+    // Vérifier si déjà en contact
+    const userContacts = await getUserContacts(userId);
+    if (userContacts.includes(contactUser.id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'This user is already in your contacts',
+      });
+    }
+    
     // Add contact (both ways for simplicity)
     await addContact(userId, contactUser.id);
     await addContact(contactUser.id, userId);
@@ -489,6 +561,23 @@ exports.getContacts = async (req, res, next) => {
     
     // Get contact IDs
     const contactIds = await getUserContacts(userId);
+    
+    // Cache handling - send Last-Modified header based on server time
+    // and use ETag for caching
+    const now = new Date();
+    const etag = `contacts-${userId}-${now.getTime()}`;
+    
+    // Set cache control headers
+    res.set('Cache-Control', 'private, max-age=30'); // 30 seconds cache
+    res.set('ETag', etag);
+    res.set('Last-Modified', now.toUTCString());
+    
+    // Check if client sent If-None-Match header matching our ETag
+    const clientEtag = req.headers['if-none-match'];
+    if (clientEtag && clientEtag === etag) {
+      // Resource hasn't changed, return 304 Not Modified
+      return res.status(304).end();
+    }
     
     // Get contact details
     const contacts = await Promise.all(

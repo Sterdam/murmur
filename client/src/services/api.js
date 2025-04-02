@@ -39,6 +39,10 @@ api.interceptors.request.use(
   }
 );
 
+// Stockage des dernières requêtes pour éviter le trop grand nombre d'appels
+const requestCache = new Map();
+const CACHE_TTL = 5000; // 5 secondes entre les requêtes identiques
+
 // Intercepteur de réponses pour gérer les erreurs courantes
 api.interceptors.response.use(
   (response) => response,
@@ -58,6 +62,19 @@ api.interceptors.response.use(
         }
       }
       
+      // Gestion spécifique de l'erreur 429 (trop de requêtes)
+      if (error.response.status === 429) {
+        console.warn('Rate limit hit, request throttled:', error.config.url);
+        
+        // Si les données sont dans le cache, utiliser la version en cache
+        const cacheKey = error.config.url;
+        if (requestCache.has(cacheKey)) {
+          const cachedData = requestCache.get(cacheKey);
+          console.log('Using cached data for', cacheKey);
+          return Promise.resolve(cachedData);
+        }
+      }
+      
       // Gestion des autres codes d'erreur
       console.error(
         `API Error ${error.response.status}: ${error.response.data?.message || 'Unknown error'}`
@@ -71,6 +88,55 @@ api.interceptors.response.use(
     }
     
     return Promise.reject(error);
+  }
+);
+
+// Intercepteur de requête pour mettre en cache les réponses GET
+api.interceptors.request.use(
+  async (config) => {
+    try {
+      // Si c'est une requête GET, vérifier si elle n'a pas déjà été faite récemment
+      if (config.method === 'get') {
+        const cacheKey = config.url;
+        const now = Date.now();
+        
+        // Vérifier si la requête est dans le cache et encore fraîche
+        if (requestCache.has(cacheKey)) {
+          const { timestamp, data } = requestCache.get(cacheKey);
+          
+          // Si le cache est encore valide (moins de X secondes)
+          if (now - timestamp < CACHE_TTL) {
+            console.log('Using cached response for', cacheKey);
+            throw { config, response: data, cached: true };
+          }
+        }
+      }
+      
+      return config;
+    } catch (error) {
+      if (error.cached) {
+        return Promise.resolve(error.response);
+      }
+      return Promise.reject(error);
+    }
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Intercepteur de réponse pour mettre à jour le cache
+api.interceptors.response.use(
+  (response) => {
+    // Mettre en cache les réponses GET réussies
+    if (response.config.method === 'get') {
+      const cacheKey = response.config.url;
+      requestCache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: response
+      });
+    }
+    return response;
   }
 );
 
