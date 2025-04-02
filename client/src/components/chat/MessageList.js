@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import styled from 'styled-components';
-import { fetchConversationMessages, normalizeConversationId } from '../../store/slices/messagesSlice';
-import { FiAlertCircle, FiRefreshCw } from 'react-icons/fi';
+import { fetchConversationMessages, normalizeConversationId, markConversationAsRead } from '../../store/slices/messagesSlice';
+import { FiAlertCircle, FiRefreshCw, FiLock, FiChevronDown } from 'react-icons/fi';
 
 // Components
 import Avatar from '../ui/Avatar';
@@ -14,6 +14,7 @@ const ListContainer = styled.div`
   display: flex;
   flex-direction: column;
   scroll-behavior: smooth;
+  position: relative;
 `;
 
 const MessageGroup = styled.div`
@@ -37,9 +38,18 @@ const SenderName = styled.span`
 `;
 
 const MessageContent = styled.div`
-  background-color: ${({ theme, sent }) =>
-    sent ? theme.colors.primary : 'rgba(255, 255, 255, 0.08)'};
-  color: ${({ theme, sent }) => (sent ? theme.colors.onPrimary : theme.colors.textPrimary)};
+  background-color: ${({ theme, sent, encrypted }) =>
+    encrypted 
+      ? 'rgba(244, 67, 54, 0.1)'
+      : sent 
+        ? theme.colors.primary 
+        : 'rgba(255, 255, 255, 0.08)'};
+  color: ${({ theme, sent, encrypted }) => 
+    encrypted 
+      ? theme.colors.error
+      : sent 
+        ? theme.colors.onPrimary 
+        : theme.colors.textPrimary};
   padding: 10px 16px;
   border-radius: 18px;
   max-width: 100%;
@@ -56,7 +66,25 @@ const MessageContent = styled.div`
   /* Style pour les messages chiffrés qu'on ne peut pas déchiffrer */
   ${({ encrypted }) => encrypted && `
     font-style: italic;
-    opacity: 0.7;
+    opacity: 0.9;
+  `}
+  
+  /* Icône de cadenas pour les messages chiffrés sécurisés */
+  ${({ secure }) => secure && `
+    &::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      width: 12px;
+      height: 12px;
+      background-color: rgba(0, 0, 0, 0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 8px;
+    }
   `}
 `;
 
@@ -148,7 +176,7 @@ const LoadingIndicator = styled.div`
   margin: 20px 0;
   
   svg {
-    animation: spin 1s linear infinite;
+    animation: spin 1.2s linear infinite;
     margin-bottom: 8px;
     opacity: 0.7;
   }
@@ -185,10 +213,54 @@ const StyledButton = styled.button`
   }
 `;
 
+const NewMessagesButton = styled.button`
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: ${({ theme }) => theme.colors.primary};
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 24px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 5;
+  cursor: pointer;
+  
+  &:hover {
+    background-color: ${({ theme }) => theme.colors.primaryDark};
+  }
+  
+  svg {
+    margin-left: 8px;
+  }
+`;
+
+const EncryptionNote = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 16px;
+  padding: 8px 12px;
+  background-color: rgba(33, 150, 243, 0.1);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  
+  svg {
+    margin-right: 8px;
+    color: #2196F3;
+  }
+`;
+
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
-  const { loading, error } = useSelector((state) => state.messages);
+  const { loading, error, loadingConversationId } = useSelector((state) => state.messages);
   
   // Normaliser l'ID de conversation pour la cohérence
   const normalizedId = normalizeConversationId(conversationId);
@@ -212,6 +284,7 @@ const MessageList = ({ conversationId }) => {
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const [oldScrollHeight, setOldScrollHeight] = useState(0);
   const [lastLoadTime, setLastLoadTime] = useState(0);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   
   // Effet pour charger les messages au montage du composant
   useEffect(() => {
@@ -234,13 +307,15 @@ const MessageList = ({ conversationId }) => {
       }
       
       // Vérifier si on a une requête en cours pour éviter les doublons
-      if (loading) {
+      if (loading && loadingConversationId === normalizedId) {
         console.log('Skip loading messages: already in progress');
         return;
       }
       
       try {
         console.log(`Loading messages for conversation: ${normalizedId}`);
+        setIsLoadingMore(true);
+        
         await dispatch(fetchConversationMessages(normalizedId)).unwrap();
         
         // Mettre à jour le dernier temps de chargement
@@ -249,6 +324,13 @@ const MessageList = ({ conversationId }) => {
         // Vérifier si le composant est toujours monté avant de mettre à jour l'état
         if (isMounted.current) {
           setIsInitialLoad(false);
+          setIsLoadingMore(false);
+          
+          // Marquer la conversation comme lue
+          dispatch(markConversationAsRead({
+            conversationId: normalizedId,
+            userId: user?.id
+          }));
         }
       } catch (err) {
         console.error('Failed to fetch messages:', err);
@@ -257,6 +339,7 @@ const MessageList = ({ conversationId }) => {
         if (isMounted.current) {
           setLocalError(err);
           setIsInitialLoad(false);
+          setIsLoadingMore(false);
         }
       }
     };
@@ -286,7 +369,7 @@ const MessageList = ({ conversationId }) => {
       isMounted.current = false;
       setLocalError(null);
     };
-  }, [normalizedId, dispatch]); // Dépendances minimales!
+  }, [normalizedId, dispatch, messages.length, loading, loadingConversationId, lastLoadTime, user?.id]);
   
   // Surveiller les changements dans les messages pour détecter les nouveaux messages
   useEffect(() => {
@@ -302,6 +385,14 @@ const MessageList = ({ conversationId }) => {
             messagesEndRef.current.scrollIntoView({ behavior: isInitialLoad ? 'auto' : 'smooth' });
           }
         }, 100);
+        
+        // Si on était en bas et il y a de nouveaux messages, marquer comme lus
+        if (messages.length > 0 && user?.id) {
+          dispatch(markConversationAsRead({
+            conversationId: normalizedId,
+            userId: user.id
+          }));
+        }
       } else if (scrollHeight > oldScrollHeight) {
         // Si de nouveaux messages sont arrivés mais nous ne sommes pas en bas
         setHasNewMessages(true);
@@ -310,17 +401,21 @@ const MessageList = ({ conversationId }) => {
       // Enregistrer la hauteur de défilement actuelle pour la comparaison
       setOldScrollHeight(scrollHeight);
     }
-  }, [messages, isInitialLoad, oldScrollHeight]);
+  }, [messages, isInitialLoad, oldScrollHeight, normalizedId, dispatch, user?.id]);
   
   // Fonction pour réessayer de charger les messages en cas d'erreur
   const handleRetry = async () => {
     setLocalError(null);
+    setIsLoadingMore(true);
+    
     try {
       await dispatch(fetchConversationMessages(normalizedId)).unwrap();
       setLastLoadTime(Date.now());
+      setIsLoadingMore(false);
     } catch (err) {
       console.error('Retry failed:', err);
       setLocalError(err);
+      setIsLoadingMore(false);
     }
   };
   
@@ -329,6 +424,14 @@ const MessageList = ({ conversationId }) => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
       setHasNewMessages(false);
+      
+      // Marquer comme lus quand on descend manuellement
+      if (user?.id) {
+        dispatch(markConversationAsRead({
+          conversationId: normalizedId,
+          userId: user.id
+        }));
+      }
     }
   };
   
@@ -337,7 +440,7 @@ const MessageList = ({ conversationId }) => {
     try {
       const date = new Date(dateString);
       if (isNaN(date.getTime())) {
-        return 'Invalid date';
+        return 'Date inconnue';
       }
       
       const today = new Date();
@@ -345,19 +448,19 @@ const MessageList = ({ conversationId }) => {
       yesterday.setDate(yesterday.getDate() - 1);
       
       if (date.toDateString() === today.toDateString()) {
-        return 'Today';
+        return 'Aujourd\'hui';
       } else if (date.toDateString() === yesterday.toDateString()) {
-        return 'Yesterday';
+        return 'Hier';
       } else {
         return date.toLocaleDateString(undefined, { 
           year: 'numeric', 
-          month: 'short', 
+          month: 'long', 
           day: 'numeric' 
         });
       }
     } catch (error) {
       console.error('Date formatting error:', error);
-      return 'Unknown date';
+      return 'Date inconnue';
     }
   };
   
@@ -381,12 +484,46 @@ const MessageList = ({ conversationId }) => {
     }
   };
   
-  // Vérifier si un message contient une indication de chiffrement échouée
+  // Vérifier si un message contient une indication de chiffrement échoué
   const isEncryptedMessage = (message) => {
-    return message && typeof message === 'string' && 
-      (message.includes('[Encrypted message') || 
-       message.includes('Cannot decrypt'));
+    if (!message) return false;
+    
+    if (message.encryptionFailed) return true;
+    
+    if (typeof message.message === 'string') {
+      return message.message.includes('[Message chiffré') || 
+             message.message.includes('Impossible de déchiffrer');
+    }
+    
+    return false;
   };
+  
+  // Gérer le scroll vers le haut pour charger plus de messages (pagination)
+  const handleScroll = useCallback(() => {
+    if (!listContainerRef.current) return;
+    
+    const { scrollTop } = listContainerRef.current;
+    
+    // Si on est au début de la liste et il y a déjà des messages, charger plus
+    if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore) {
+      // Ici on pourrait implémenter la pagination pour charger les messages plus anciens
+      console.log('Top of chat reached, could load older messages');
+      // Pour l'instant on recharge simplement tous les messages
+      handleRetry();
+    }
+  }, [loading, isLoadingMore, messages.length, handleRetry]);
+  
+  // Ajouter l'écouteur d'événement de scroll
+  useEffect(() => {
+    const listContainer = listContainerRef.current;
+    if (listContainer) {
+      listContainer.addEventListener('scroll', handleScroll);
+      
+      return () => {
+        listContainer.removeEventListener('scroll', handleScroll);
+      };
+    }
+  }, [handleScroll]);
   
   // Afficher un état d'erreur
   if (localError || error) {
@@ -443,6 +580,10 @@ const MessageList = ({ conversationId }) => {
       <EmptyState>
         <h3>Aucun message pour le moment</h3>
         <p>Commencez la conversation en envoyant un message ci-dessous.</p>
+        <EncryptionNote>
+          <FiLock />
+          <span>Tous les messages sont protégés par un chiffrement de bout en bout</span>
+        </EncryptionNote>
       </EmptyState>
     );
   }
@@ -486,30 +627,20 @@ const MessageList = ({ conversationId }) => {
   
   return (
     <ListContainer ref={listContainerRef}>
-      {/* Indicateur de chargement pour les rafraîchissements non initiaux */}
-      {loading && !isInitialLoad && (
-        <LoadingIndicator style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)' }}>
+      {/* Indicateur de chargement pour le chargement de messages plus anciens */}
+      {isLoadingMore && (
+        <LoadingIndicator style={{ padding: '10px 0' }}>
           <FiRefreshCw size={20} />
-          <span>Rafraîchissement...</span>
+          <span>Chargement des messages...</span>
         </LoadingIndicator>
       )}
       
       {/* Bouton pour défiler jusqu'aux nouveaux messages */}
       {hasNewMessages && (
-        <StyledButton 
-          onClick={scrollToBottom}
-          style={{ 
-            position: 'fixed', 
-            bottom: '80px', 
-            left: '50%', 
-            transform: 'translateX(-50%)',
-            zIndex: 5,
-            boxShadow: '0 2px 10px rgba(0,0,0,0.3)'
-          }}
-        >
-          <FiRefreshCw />
+        <NewMessagesButton onClick={scrollToBottom}>
           Nouveaux messages
-        </StyledButton>
+          <FiChevronDown />
+        </NewMessagesButton>
       )}
       
       {/* Rendu des messages groupés par date */}
@@ -525,7 +656,7 @@ const MessageList = ({ conversationId }) => {
             const sent = message.senderId === user?.id;
             const showHeader = index === 0 || 
               groupedMessages[date][index - 1]?.senderId !== message.senderId;
-            const isEncrypted = isEncryptedMessage(message.message);
+            const isEncrypted = isEncryptedMessage(message);
             
             return (
               <MessageGroup key={message.id || index} sent={sent}>
@@ -536,7 +667,7 @@ const MessageList = ({ conversationId }) => {
                   </MessageHeader>
                 )}
                 
-                <MessageContent sent={sent} encrypted={isEncrypted}>
+                <MessageContent sent={sent} encrypted={isEncrypted} secure={!isEncrypted}>
                   {message.message}
                   {sent && message.status && (
                     <MessageStatus>{message.status}</MessageStatus>
@@ -551,6 +682,22 @@ const MessageList = ({ conversationId }) => {
           })}
         </React.Fragment>
       ))}
+      
+      {/* Indicateur de chargement pour les rafraîchissements non initiaux */}
+      {loading && !isInitialLoad && !isLoadingMore && (
+        <LoadingIndicator style={{ 
+          position: 'absolute', 
+          top: '10px', 
+          left: '50%', 
+          transform: 'translateX(-50%)',
+          backgroundColor: 'rgba(30, 30, 30, 0.7)',
+          padding: '8px 16px',
+          borderRadius: '16px'
+        }}>
+          <FiRefreshCw size={16} />
+          <span>Actualisation...</span>
+        </LoadingIndicator>
+      )}
       
       <div ref={messagesEndRef} />
     </ListContainer>

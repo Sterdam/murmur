@@ -1,3 +1,4 @@
+// client/src/services/encryption.js
 /**
  * Service de chiffrement pour la messagerie sécurisée
  * Implémente le chiffrement de bout en bout (E2EE) avec des primitives modernes:
@@ -195,8 +196,8 @@ export const encryptMessage = async (message, recipientPublicKeyJson) => {
  * @param {string} encryptedMessageBase64 - Message chiffré en Base64
  * @param {string} encryptedKeyBase64 - Clé chiffrée en Base64
  * @param {string} privateKeyJson - Clé privée du destinataire (JSON)
- * @param {string} senderPublicKeyJson - Clé publique de l'expéditeur (JSON)
- * @param {string} signature - Signature numérique (optionnelle)
+ * @param {string} senderPublicKeyJson - Clé publique de l'expéditeur (optionnel)
+ * @param {string} signature - Signature numérique (optionnel)
  * @param {string} metadataJson - Métadonnées de chiffrement (JSON)
  * @returns {Promise<string>} - Message déchiffré
  */
@@ -361,3 +362,143 @@ function base64ToArrayBuffer(base64) {
     throw new Error('Erreur de conversion Base64: ' + error.message);
   }
 }
+
+/**
+ * Chiffre un message pour plusieurs destinataires (messages de groupe)
+ * @param {string} message - Message à chiffrer
+ * @param {Array} recipientsPublicKeys - Liste des clés publiques des destinataires
+ * @returns {Promise<Object>} - Données chiffrées et métadonnées pour tous les destinataires
+ */
+export const encryptGroupMessage = async (message, recipientsPublicKeys) => {
+  try {
+    if (!message || !Array.isArray(recipientsPublicKeys) || recipientsPublicKeys.length === 0) {
+      throw new Error('Message ou liste de destinataires invalide');
+    }
+    
+    const crypto = window.crypto;
+    const subtle = crypto.subtle;
+    
+    // 1. Génération d'une clé AES-GCM unique pour ce message (partagée entre tous les destinataires)
+    const aesKey = await subtle.generateKey(
+      {
+        name: 'AES-GCM',
+        length: 256
+      },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    
+    // 2. Génération d'un vecteur d'initialisation (IV) aléatoire
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    
+    // 3. Ajout de données d'authentification supplémentaires
+    const messageId = generateRandomId();
+    const timestamp = Date.now();
+    const authenticatedData = new TextEncoder().encode(`murmur-group-auth:${messageId}:${timestamp}`);
+    
+    // 4. Chiffrement du message avec AES-GCM (une seule fois pour tous les destinataires)
+    const messageBytes = new TextEncoder().encode(message);
+    const encryptedMessageBuffer = await subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv,
+        additionalData: authenticatedData,
+        tagLength: 128
+      },
+      aesKey,
+      messageBytes
+    );
+    
+    // 5. Export de la clé AES-GCM
+    const rawAesKey = await subtle.exportKey('raw', aesKey);
+    
+    // 6. Chiffrement de la clé AES avec la clé publique de chaque destinataire
+    const encryptedKeys = {};
+    let keysEncrypted = 0;
+    
+    for (const publicKeyJson of recipientsPublicKeys) {
+      try {
+        if (!publicKeyJson) continue;
+        
+        // Extraction de la clé publique
+        let recipientPublicBundle;
+        try {
+          recipientPublicBundle = JSON.parse(publicKeyJson);
+        } catch (error) {
+          console.warn('Format de clé publique invalide pour un destinataire, ignoré');
+          continue;
+        }
+        
+        // Extraction de la clé
+        let publicKeyBase64;
+        let recipientId;
+        
+        if (recipientPublicBundle.key) {
+          publicKeyBase64 = recipientPublicBundle.key;
+          recipientId = recipientPublicBundle.id || `recipient-${keysEncrypted}`;
+        } else if (typeof recipientPublicBundle === 'string') {
+          publicKeyBase64 = recipientPublicBundle;
+          recipientId = `recipient-${keysEncrypted}`;
+        } else if (recipientPublicBundle.publicKey) {
+          publicKeyBase64 = recipientPublicBundle.publicKey;
+          recipientId = recipientPublicBundle.id || `recipient-${keysEncrypted}`;
+        } else {
+          console.warn('Format de clé publique non reconnu pour un destinataire, ignoré');
+          continue;
+        }
+        
+        // Import de la clé publique
+        const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64);
+        const recipientPublicKey = await subtle.importKey(
+          'spki',
+          publicKeyBuffer,
+          {
+            name: 'RSA-OAEP',
+            hash: { name: 'SHA-256' }
+          },
+          false,
+          ['encrypt']
+        );
+        
+        // Chiffrement de la clé AES avec RSA-OAEP
+        const encryptedKeyBuffer = await subtle.encrypt(
+          { name: 'RSA-OAEP' },
+          recipientPublicKey,
+          rawAesKey
+        );
+        
+        // Stockage de la clé chiffrée pour ce destinataire
+        encryptedKeys[recipientId] = arrayBufferToBase64(encryptedKeyBuffer);
+        keysEncrypted++;
+      } catch (error) {
+        console.warn('Échec du chiffrement pour un destinataire:', error);
+      }
+    }
+    
+    if (keysEncrypted === 0) {
+      throw new Error('Aucune clé n\'a pu être chiffrée pour les destinataires');
+    }
+    
+    // 7. Construction des métadonnées de chiffrement
+    const metadata = {
+      schema: 'murmur-group-e2ee-v1',
+      messageId,
+      timestamp,
+      algorithm: 'RSA-OAEP-2048+AES-GCM-256',
+      iv: arrayBufferToBase64(iv),
+      authTagLength: 128,
+      recipientCount: keysEncrypted,
+      version: '1.0'
+    };
+    
+    // 8. Retour des données chiffrées et des clés pour tous les destinataires
+    return {
+      encryptedMessage: arrayBufferToBase64(encryptedMessageBuffer),
+      encryptedKeys,
+      metadata: JSON.stringify(metadata)
+    };
+  } catch (error) {
+    console.error('Erreur lors du chiffrement du message de groupe:', error);
+    throw new Error('Échec du chiffrement du message de groupe: ' + error.message);
+  }
+};

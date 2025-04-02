@@ -2,18 +2,19 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 import socketService from '../../services/socket';
-import { encryptMessage, decryptMessage } from '../../services/encryption';
-import { storeOfflineMessage, syncOfflineMessages } from '../../utils/offlineSync';
+import { encryptMessage, decryptMessage, encryptGroupMessage } from '../../services/encryption';
+import { storeOfflineMessage, syncOfflineMessages, cacheOfflineData } from '../../utils/offlineSync';
+import { getEncryptionKeys } from '../../utils/storage';
 
 // Fonction utilitaire pour normaliser les ID de conversation
 export const normalizeConversationId = (id) => {
   if (!id) return id;
   
   // Si c'est un ID de groupe, le laisser tel quel
-  if (id.startsWith('group:')) return id;
+  if (typeof id === 'string' && id.startsWith('group:')) return id;
   
   // Si c'est un ID direct, trier les parties
-  if (id.includes(':')) {
+  if (typeof id === 'string' && id.includes(':')) {
     const parts = id.split(':').filter(Boolean);
     if (parts.length === 2) {
       return parts.sort().join(':');
@@ -23,8 +24,6 @@ export const normalizeConversationId = (id) => {
   // Format inconnu, retourner tel quel
   return id;
 };
-
-
 
 // Async thunks
 export const fetchConversationMessages = createAsyncThunk(
@@ -41,8 +40,8 @@ export const fetchConversationMessages = createAsyncThunk(
       
       // Vérifier si nous sommes déjà en train de charger cette conversation
       const state = getState();
-      if (state.messages.loading) {
-        console.log(`Skipping fetchConversationMessages - loading in progress`);
+      if (state.messages.loading && state.messages.loadingConversationId === normalizedId) {
+        console.log(`Skipping fetchConversationMessages - loading in progress for ${normalizedId}`);
         // Retourner les messages actuels plutôt que de déclencher une nouvelle requête
         return {
           conversationId: normalizedId,
@@ -82,7 +81,10 @@ export const fetchConversationMessages = createAsyncThunk(
         
         // État courant et clés de déchiffrement
         const currentUser = state.auth.user;
-        const privateKey = state.auth.privateKey;
+        
+        // Obtenir les clés de chiffrement du stockage local
+        const keys = getEncryptionKeys();
+        const privateKey = keys?.privateKey || state.auth.privateKey;
         
         if (!privateKey) {
           console.warn('Private key not available for decryption');
@@ -106,31 +108,54 @@ export const fetchConversationMessages = createAsyncThunk(
             }
             
             try {
-              // Déchiffrer uniquement si on a les clés nécessaires
-              if (!message.encryptedKey || !privateKey) {
+              let decryptedText = null;
+              
+              // Cas de message direct
+              if (message.encryptedKey && privateKey) {
+                const metadata = message.metadata || '{}';
+                
+                decryptedText = await decryptMessage(
+                  message.message,
+                  message.encryptedKey,
+                  privateKey,
+                  null,
+                  null,
+                  metadata
+                );
+              } 
+              // Cas de message de groupe
+              else if (message.encryptedKeys && privateKey && currentUser?.id) {
+                // Récupérer la clé chiffrée pour cet utilisateur
+                const userEncryptedKey = message.encryptedKeys[currentUser.id];
+                const metadata = message.metadata || '{}';
+                
+                if (userEncryptedKey) {
+                  decryptedText = await decryptMessage(
+                    message.message,
+                    userEncryptedKey,
+                    privateKey,
+                    null,
+                    null,
+                    metadata
+                  );
+                }
+              }
+              
+              // Si le déchiffrement a échoué ou n'était pas possible
+              if (!decryptedText) {
                 return {
                   ...message,
                   message: '[Message chiffré - Impossible de déchiffrer]',
                   conversationId: normalizedId,
+                  encryptionFailed: true
                 };
               }
               
-              // Déchiffrement avec gestion des erreurs
-              const metadata = message.metadata || '{}';
-              
-              const decrypted = await decryptMessage(
-                message.message,
-                message.encryptedKey,
-                privateKey,
-                null,
-                null,
-                metadata
-              );
-              
               return {
                 ...message,
-                message: decrypted,
+                message: decryptedText,
                 conversationId: normalizedId,
+                encryptionFailed: false
               };
             } catch (error) {
               console.error('Failed to decrypt message:', error, message);
@@ -138,6 +163,7 @@ export const fetchConversationMessages = createAsyncThunk(
                 ...message,
                 message: '[Message chiffré - Échec du déchiffrement]',
                 conversationId: normalizedId,
+                encryptionFailed: true
               };
             }
           })
@@ -147,6 +173,11 @@ export const fetchConversationMessages = createAsyncThunk(
         const validMessages = decryptedMessages.filter(msg => msg !== null);
         
         console.log(`Successfully processed ${validMessages.length} messages for conversation: ${normalizedId}`);
+        
+        // Mettre en cache les messages pour l'utilisation hors ligne
+        cacheOfflineData('messages', validMessages).catch(err => {
+          console.warn('Failed to cache messages for offline use:', err);
+        });
         
         return {
           conversationId: normalizedId,
@@ -210,9 +241,16 @@ export const sendMessage = createAsyncThunk(
       
       const currentUser = getState().auth.user;
       const contacts = getState().contacts.contacts;
+      const groups = getState().groups.groups;
       
       if (!currentUser || !currentUser.id) {
         return rejectWithValue('Utilisateur non authentifié');
+      }
+      
+      // Obtenir les clés de chiffrement du stockage local
+      const keys = getEncryptionKeys();
+      if (!keys) {
+        return rejectWithValue('Clés de chiffrement non disponibles');
       }
       
       // Normaliser l'ID de conversation
@@ -264,7 +302,9 @@ export const sendMessage = createAsyncThunk(
           await storeOfflineMessage(messagePayload);
           
           // Essayer de synchroniser immédiatement
-          syncOfflineMessages();
+          syncOfflineMessages().catch(err => {
+            console.warn('Failed to sync offline messages:', err);
+          });
         }
         
         // Créer un ID de message unique
@@ -287,7 +327,7 @@ export const sendMessage = createAsyncThunk(
       else if (groupId) {
         console.log('Sending group message to group:', groupId);
         // Trouver le groupe
-        const group = getState().groups.groups.find((g) => g.id === groupId);
+        const group = groups.find((g) => g.id === groupId);
         
         if (!group) {
           console.error('Group not found:', groupId);
@@ -296,61 +336,47 @@ export const sendMessage = createAsyncThunk(
         
         console.log('Group found:', group.name, 'with members:', group.members?.length || 0);
         
-        // Chiffrer le message pour chaque membre du groupe
-        const encryptedKeys = {};
-        let anyKeysFound = false;
-        
         if (!group.members || !Array.isArray(group.members) || group.members.length === 0) {
           return rejectWithValue('Aucun membre dans ce groupe');
         }
         
-        // Parcourir tous les membres pour chiffrer le message pour chacun
+        // Collecter les clés publiques de tous les membres (sauf soi-même)
+        const membersPublicKeys = [];
+        const membersWithKeys = {};
+        
         for (const memberId of group.members) {
-          if (memberId === currentUser.id) {
-            console.log('Skipping self for encryption:', memberId);
-            continue; // Ignorer soi-même
-          }
+          if (memberId === currentUser.id) continue; // Ignorer soi-même
           
-          const member = contacts.find(
-            (contact) => contact.id === memberId
-          );
+          const member = contacts.find(contact => contact.id === memberId);
           
           if (member && member.publicKey) {
-            console.log('Found member with public key:', member.username);
-            anyKeysFound = true;
-            try {
-              const encrypted = await encryptMessage(message, member.publicKey);
-              encryptedKeys[memberId] = encrypted.encryptedKey;
-              console.log('Successfully encrypted for member:', member.username);
-            } catch (err) {
-              console.error(`Failed to encrypt for member ${memberId}:`, err);
-              // Continuer avec les autres membres
-            }
+            membersPublicKeys.push(member.publicKey);
+            membersWithKeys[memberId] = member.publicKey;
           } else {
-            console.log('Member missing or has no public key:', memberId);
+            console.log(`Member ${memberId} has no public key available`);
           }
         }
         
-        if (!anyKeysFound) {
-          console.error('No valid recipients with public keys in the group');
-          return rejectWithValue('Aucun destinataire valide avec clés publiques - Vous devez être connecté avec au moins un membre');
+        if (membersPublicKeys.length === 0) {
+          console.error('No members with public keys found in the group');
+          return rejectWithValue('Aucun membre avec clé publique trouvé dans le groupe');
         }
         
-        console.log(`Successfully encrypted for ${Object.keys(encryptedKeys).length} members`);
+        console.log(`Found ${membersPublicKeys.length} members with public keys`);
         
-        // Utiliser le même message chiffré pour tous les destinataires (économie de bande passante)
-        const firstContact = contacts.find(c => c.publicKey);
-        if (!firstContact) {
-          console.error('No contact with public key found for base encryption');
-          return rejectWithValue('Impossible de trouver une clé publique valide pour le chiffrement');
+        try {
+          // Utiliser la fonction optimisée pour le chiffrement de groupe
+          encryptedData = await encryptGroupMessage(message, membersPublicKeys);
+          console.log('Group message encrypted successfully');
+        } catch (err) {
+          console.error('Group encryption error:', err);
+          return rejectWithValue('Échec du chiffrement du message de groupe: ' + err.message);
         }
-        
-        encryptedData = await encryptMessage(message, firstContact.publicKey);
         
         const groupMessagePayload = {
           groupId,
           message: encryptedData.encryptedMessage,
-          encryptedKeys,
+          encryptedKeys: encryptedData.encryptedKeys,
           metadata: encryptedData.metadata
         };
         
@@ -366,7 +392,9 @@ export const sendMessage = createAsyncThunk(
           await storeOfflineMessage(groupMessagePayload);
           
           // Essayer de synchroniser immédiatement
-          syncOfflineMessages();
+          syncOfflineMessages().catch(err => {
+            console.warn('Failed to sync offline messages:', err);
+          });
         }
         
         // Créer un ID de message unique
@@ -397,9 +425,10 @@ const initialState = {
   conversations: {},
   activeConversation: null,
   loading: false,
+  loadingConversationId: null,
   error: null,
-  lastFetchTime: 0, // Pour suivre la dernière fois qu'une requête a été faite
-  fetchCount: 0,    // Pour suivre le nombre de requêtes
+  lastFetchTime: 0,
+  fetchCount: 0,
 };
 
 const messagesSlice = createSlice({
@@ -407,7 +436,7 @@ const messagesSlice = createSlice({
   initialState,
   reducers: {
     setActiveConversation: (state, action) => {
-      state.activeConversation = action.payload;
+      state.activeConversation = action.payload ? normalizeConversationId(action.payload) : null;
     },
     addMessage: (state, action) => {
       const { message } = action.payload;
@@ -463,11 +492,12 @@ const messagesSlice = createSlice({
       state.error = null;
     },
     markConversationAsRead: (state, action) => {
-      const conversationId = normalizeConversationId(action.payload);
+      const conversationId = normalizeConversationId(action.payload.conversationId);
+      const userId = action.payload.userId;
       
-      if (state.conversations[conversationId]) {
+      if (state.conversations[conversationId] && userId) {
         state.conversations[conversationId].forEach(message => {
-          if (!message.isRead && message.senderId !== action.payload.userId) {
+          if (!message.isRead && message.senderId !== userId) {
             message.isRead = true;
           }
         });
@@ -476,19 +506,41 @@ const messagesSlice = createSlice({
     // Récupère les conversations locales quand l'application démarre
     hydrateConversations: (state, action) => {
       if (action.payload && typeof action.payload === 'object') {
-        state.conversations = action.payload;
+        // Normaliser toutes les clés de conversation
+        const normalizedConversations = {};
+        Object.keys(action.payload).forEach(convId => {
+          const normalizedId = normalizeConversationId(convId);
+          normalizedConversations[normalizedId] = action.payload[convId];
+        });
+        
+        state.conversations = normalizedConversations;
       }
+    },
+    // Nettoie une conversation spécifique
+    clearConversation: (state, action) => {
+      const conversationId = normalizeConversationId(action.payload);
+      
+      if (state.conversations[conversationId]) {
+        delete state.conversations[conversationId];
+      }
+    },
+    // Nettoie toutes les conversations
+    clearAllConversations: (state) => {
+      state.conversations = {};
+      state.activeConversation = null;
     }
   },
   extraReducers: (builder) => {
     builder
       // Fetch Messages
-      .addCase(fetchConversationMessages.pending, (state) => {
+      .addCase(fetchConversationMessages.pending, (state, action) => {
         state.loading = true;
+        state.loadingConversationId = normalizeConversationId(action.meta.arg);
         state.error = null;
       })
       .addCase(fetchConversationMessages.fulfilled, (state, action) => {
         state.loading = false;
+        state.loadingConversationId = null;
         
         // Vérification de la validité de la payload
         if (action.payload && action.payload.conversationId && Array.isArray(action.payload.messages)) {
@@ -544,6 +596,7 @@ const messagesSlice = createSlice({
       })
       .addCase(fetchConversationMessages.rejected, (state, action) => {
         state.loading = false;
+        state.loadingConversationId = null;
         state.error = action.payload || 'Échec du chargement des messages';
         console.error('Failed to fetch messages:', action.payload);
       })
@@ -601,7 +654,9 @@ export const {
   updateMessageStatus, 
   clearMessageError,
   markConversationAsRead,
-  hydrateConversations
+  hydrateConversations,
+  clearConversation,
+  clearAllConversations
 } = messagesSlice.actions;
 
 export default messagesSlice.reducer;

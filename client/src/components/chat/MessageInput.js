@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
-import { RiSendPlaneFill, RiAttachment2, RiEmotionLine } from 'react-icons/ri';
-import { FiAlertCircle } from 'react-icons/fi';
+import { RiSendPlaneFill, RiAttachment2, RiEmotionLine, RiLockLine } from 'react-icons/ri';
+import { FiAlertCircle, FiInfo } from 'react-icons/fi';
 
 // Redux actions
 import { sendMessage, clearMessageError, normalizeConversationId } from '../../store/slices/messagesSlice';
@@ -102,6 +102,40 @@ const ErrorMessage = styled.div`
   }
 `;
 
+const InfoBanner = styled.div`
+  background-color: rgba(33, 150, 243, 0.1);
+  color: ${({ theme }) => theme.colors.textPrimary};
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  
+  svg {
+    margin-right: 8px;
+    color: #2196F3;
+    flex-shrink: 0;
+  }
+`;
+
+const EncryptionIndicator = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: ${({ theme }) => theme.colors.textSecondary};
+  margin-top: 8px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  
+  svg {
+    margin-right: 4px;
+    font-size: 14px;
+    color: #4CAF50;
+  }
+`;
+
 const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
@@ -109,10 +143,13 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const [contentRows, setContentRows] = useState(1);
   const [typingTimeout, setTypingTimeout] = useState(null);
   const [lastTypingSignal, setLastTypingSignal] = useState(0);
+  const [uploadedFile, setUploadedFile] = useState(null);
   
   const textAreaRef = useRef(null);
+  const fileInputRef = useRef(null);
   const dispatch = useDispatch();
   const { contacts } = useSelector((state) => state.contacts);
+  const { groups } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
   const { error: messageError } = useSelector((state) => state.messages);
   
@@ -134,8 +171,30 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     return found || null;
   }, [recipientId, contacts]);
   
+  // Trouver le groupe si c'est un message de groupe
+  const group = useCallback(() => {
+    if (!groupId || !Array.isArray(groups)) return null;
+    const found = groups.find(g => g?.id === groupId);
+    return found || null;
+  }, [groupId, groups]);
+  
   const recipientObj = recipient();
+  const groupObj = group();
   const hasPublicKey = recipientObj && recipientObj.publicKey;
+  
+  // Vérifier si on a des membres avec des clés dans le groupe
+  const groupHasMembers = useMemo(() => {
+    if (!groupObj || !groupObj.members || !Array.isArray(groupObj.members)) return false;
+    
+    // Vérifier qu'il y a au moins un membre (autre que l'utilisateur courant) avec une clé publique
+    const membersWithKeys = groupObj.members.filter(memberId => {
+      if (memberId === user?.id) return false; // Ignorer l'utilisateur courant
+      const member = contacts.find(contact => contact.id === memberId);
+      return member && member.publicKey;
+    });
+    
+    return membersWithKeys.length > 0;
+  }, [groupObj, contacts, user]);
   
   // Effect pour gérer les erreurs Redux
   useEffect(() => {
@@ -153,12 +212,16 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   // Effect pour réinitialiser les erreurs lors du changement de conversation
   useEffect(() => {
     setError(null);
+    setMessage('');
+    setContentRows(1);
+    setUploadedFile(null);
+    
     return () => {
       if (typingTimeout) {
         clearTimeout(typingTimeout);
       }
     };
-  }, [conversationId, recipientId, groupId, typingTimeout]);
+  }, [conversationId, recipientId, groupId]);
   
   // Fonction pour calculer le nombre de lignes du message
   const calculateRows = useCallback((text) => {
@@ -222,8 +285,8 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     }
     
     // Vérifier si dans un groupe
-    if (groupId && !normalizedConversationId?.startsWith('group:')) {
-      setError("Erreur de configuration de conversation : l'ID de groupe est invalide.");
+    if (groupId && !groupHasMembers) {
+      setError("Impossible d'envoyer le message : aucun membre du groupe n'a de clé publique disponible.");
       return;
     }
     
@@ -252,6 +315,7 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
       // Réinitialiser le formulaire après succès
       setMessage('');
       setContentRows(1);
+      setUploadedFile(null);
       
       // Focus sur le textarea
       if (textAreaRef.current) {
@@ -294,12 +358,42 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     }
   };
   
+  // Ouvrir le sélecteur de fichier
+  const handleAttachmentClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+  
+  // Gérer le changement de fichier
+  const handleFileChange = (e) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      setUploadedFile(files[0]);
+      // Ajuster le message pour inclure une mention du fichier
+      setMessage((prev) => 
+        prev ? `${prev}\n[Fichier: ${files[0].name}]` : `[Fichier: ${files[0].name}]`
+      );
+      setContentRows(calculateRows(message + `\n[Fichier: ${files[0].name}]`));
+    }
+  };
+  
   // Texte de placeholder en fonction de l'état
   const getPlaceholderText = () => {
     if (!conversationId) return "Chargement de la conversation...";
-    if (!hasPublicKey && recipientId) return "Vous devez être connecté avec ce contact pour envoyer des messages";
+    if (recipientId && !hasPublicKey) return "Vous devez être connecté avec ce contact pour envoyer des messages";
+    if (groupId && !groupHasMembers) return "Aucun membre du groupe n'a de clé publique";
     if (sending) return "Envoi en cours...";
     return "Tapez un message...";
+  };
+  
+  // Vérifier si le message peut être envoyé
+  const canSendMessage = () => {
+    if (sending) return false;
+    if (!conversationId) return false;
+    if (recipientId && !hasPublicKey) return false;
+    if (groupId && !groupHasMembers) return false;
+    return message.trim() !== '';
   };
   
   return (
@@ -312,14 +406,36 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
           </ErrorMessage>
         )}
         
+        {/* Afficher une bannière d'information pour les messages de groupe */}
+        {groupId && groupObj && (
+          <InfoBanner>
+            <FiInfo size={16} />
+            <span>
+              Les messages envoyés dans ce groupe seront chiffrés pour 
+              {groupHasMembers ? ` ${groupObj.members.filter(id => id !== user?.id).length} membre(s)` : ' tous les membres'} 
+              à l'aide de leurs clés publiques.
+            </span>
+          </InfoBanner>
+        )}
+        
         <InputRow>
           <IconButton
             type="button"
             title="Joindre un fichier"
-            disabled={!hasPublicKey && recipientId || sending}
+            disabled={!canSendMessage()}
+            onClick={handleAttachmentClick}
           >
             <RiAttachment2 />
           </IconButton>
+          
+          {/* Input de fichier caché */}
+          <input 
+            ref={fileInputRef}
+            type="file"
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+            accept="image/*,.pdf,.doc,.docx,.txt"
+          />
           
           <TextArea
             ref={textAreaRef}
@@ -329,13 +445,13 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
             onKeyDown={handleKeyDown}
             rows={contentRows}
             error={!!error}
-            disabled={sending || (!hasPublicKey && recipientId) || !conversationId}
+            disabled={sending || (recipientId && !hasPublicKey) || (groupId && !groupHasMembers) || !conversationId}
           />
           
           <IconButton
             type="button"
             title="Ajouter un emoji"
-            disabled={!hasPublicKey && recipientId || sending}
+            disabled={!canSendMessage()}
           >
             <RiEmotionLine />
           </IconButton>
@@ -343,12 +459,17 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
           <IconButton 
             type="submit" 
             primary 
-            disabled={message.trim() === '' || sending || (!hasPublicKey && recipientId) || !conversationId}
+            disabled={!canSendMessage()}
             title="Envoyer le message"
           >
             <RiSendPlaneFill />
           </IconButton>
         </InputRow>
+        
+        <EncryptionIndicator>
+          <RiLockLine />
+          <span>Message protégé par chiffrement de bout en bout</span>
+        </EncryptionIndicator>
       </InputForm>
     </InputContainer>
   );
