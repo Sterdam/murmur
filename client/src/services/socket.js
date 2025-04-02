@@ -1,317 +1,168 @@
 // client/src/services/socket.js
 import { io } from 'socket.io-client';
 import { addMessage, updateMessageStatus } from '../store/slices/messagesSlice';
+import envConfig from '../config/env';
 
-let socket;
-let dispatch;
-let store;
+// Singleton pour le socket
+let socket = null;
 
-/**
- * Initialisation de la connexion socket
- * @param {Object} appStore - Store Redux
- */
-const initSocket = (appStore) => {
-  try {
-    store = appStore;
-    dispatch = store.dispatch;
-    
-    const token = store.getState().auth.token;
-    
-    if (!token) {
-      console.error('No token available for socket connection');
-      return;
-    }
-    
-    // Détermination de l'URL du socket basée sur l'environnement
-    // Utiliser une URL relative pour éviter les problèmes de CORS
-    const socketUrl = window.location.origin;
-    
-    // Création de la connexion socket
-    socket = io(socketUrl, {
-      auth: {
-        token,
-      },
-      path: '/socket.io',
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-    });
-    
-    // Gestionnaires d'événements socket
-    socket.on('connect', () => {
-      console.log('Socket connected');
-    });
-    
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected');
-    });
-    
-    socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
-    });
-    
-    // Gestionnaires de messages
-    socket.on('private-message', handlePrivateMessage);
-    socket.on('group-message', handleGroupMessage);
-    socket.on('message-delivered', handleMessageDelivery);
-    socket.on('typing', handleTypingIndicator);
-    
-    // Rejoindre les groupes de l'utilisateur
-    const groups = store.getState().groups.groups;
-    if (Array.isArray(groups)) {
-      groups.forEach((group) => {
-        if (group && group.id) {
-          socket.emit('join-group', group.id);
-        }
+// Version simplifiée sans dépendance au store directement
+const socketService = {
+  // Connexion au serveur socket
+  connect: (token) => {
+    try {
+      if (!token) {
+        console.error('No token available for socket connection');
+        return false;
+      }
+
+      // Si un socket existe déjà, le déconnecter d'abord
+      if (socket) {
+        socket.disconnect();
+      }
+
+      // Détermination de l'URL du socket basée sur l'environnement
+      const socketUrl = process.env.REACT_APP_SOCKET_URL || envConfig.socketUrl;
+      console.log(`Connecting to socket server: ${socketUrl}`);
+
+      // Création de la connexion socket
+      socket = io(socketUrl, {
+        auth: { token },
+        path: envConfig.socketPath,
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 20000,
+        withCredentials: true,
       });
-    }
-  } catch (error) {
-    console.error('Error initializing socket:', error);
-  }
-};
 
-/**
- * Gestionnaire des messages privés reçus
- * @param {Object} data - Données du message
- */
-const handlePrivateMessage = async (data) => {
-  try {
-    if (!dispatch || !store || !store.getState) {
-      console.error('Store or dispatch not available');
-      return;
-    }
-    
-    // Déchiffrer le message avec la clé privée de l'utilisateur
-    // Pour cet exemple, on va juste utiliser le message tel quel
-    const decryptedMessage = data.message;
-    
-    const currentUser = store.getState().auth.user;
-    if (!currentUser || !currentUser.id) {
-      console.error('Current user not available');
-      return;
-    }
-    
-    const conversationId = [currentUser.id, data.senderId].sort().join(':');
-    
-    // Ajouter le message au store
-    dispatch(addMessage({
-      message: {
-        ...data,
-        message: decryptedMessage,
-        conversationId,
-      },
-    }));
-    
-    // Afficher une notification si l'application est en arrière-plan
-    if (document.hidden) {
-      showNotification(data.senderUsername, decryptedMessage);
-    }
-  } catch (error) {
-    console.error('Error handling private message:', error);
-  }
-};
+      // Configuration des événements de base
+      socket.on('connect', () => {
+        console.log('Socket connected successfully');
+      });
 
-/**
- * Gestionnaire des messages de groupe reçus
- * @param {Object} data - Données du message
- */
-const handleGroupMessage = async (data) => {
-  try {
-    if (!dispatch || !store || !store.getState) {
-      console.error('Store or dispatch not available for group message');
-      return;
-    }
-    
-    const currentUser = store.getState().auth.user;
-    if (!currentUser || !currentUser.id) {
-      console.error('Current user not available for group message');
-      return;
-    }
-    
-    // Récupérer la clé chiffrée pour l'utilisateur actuel
-    const encryptedKey = data.encryptedKeys && data.encryptedKeys[currentUser.id];
-    
-    if (!encryptedKey) {
-      console.error('No encrypted key for user in group message');
-      return;
-    }
-    
-    // Déchiffrer le message - simplified for now
-    const decryptedMessage = data.message;
-    
-    const conversationId = `group:${data.groupId}`;
-    
-    // Ajouter le message au store
-    dispatch(addMessage({
-      message: {
-        ...data,
-        message: decryptedMessage,
-        conversationId,
-      },
-    }));
-    
-    // Afficher une notification si l'application est en arrière-plan
-    if (document.hidden) {
-      // Récupérer le nom du groupe
-      const groups = store.getState().groups.groups;
-      const group = groups.find((g) => g.id === data.groupId);
-      const title = group ? `${data.senderUsername} in ${group.name}` : data.senderUsername;
-      
-      showNotification(title, decryptedMessage);
-    }
-  } catch (error) {
-    console.error('Error handling group message:', error);
-  }
-};
+      socket.on('disconnect', () => {
+        console.log('Socket disconnected');
+      });
 
-/**
- * Gestion de la mise à jour du statut de livraison des messages
- * @param {Object} data - Données de livraison
- */
-const handleMessageDelivery = (data) => {
-  try {
-    if (!dispatch || !store || !store.getState) {
-      console.error('Store or dispatch not available for message delivery');
-      return;
-    }
-    
-    const currentUser = store.getState().auth.user;
-    if (!currentUser || !currentUser.id || !data.recipientId) {
-      return;
-    }
-    
-    const conversationId = [currentUser.id, data.recipientId].sort().join(':');
-    
-    dispatch(updateMessageStatus({
-      messageId: data.id,
-      conversationId,
-      status: data.delivered ? 'delivered' : 'sent',
-    }));
-  } catch (error) {
-    console.error('Error handling message delivery:', error);
-  }
-};
+      socket.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+      });
 
-/**
- * Gestion des indicateurs de frappe
- * @param {Object} data - Données de frappe
- */
-const handleTypingIndicator = (data) => {
-  // Cette fonction sera implémentée par les composants UI
-  // qui ont besoin d'afficher l'indicateur de frappe
-};
+      return true;
+    } catch (error) {
+      console.error('Error connecting to socket:', error);
+      return false;
+    }
+  },
 
-/**
- * Envoi d'un message privé via socket
- * @param {Object} data - Données du message
- * @returns {boolean} - Succès de l'envoi
- */
-const sendPrivateMessage = (data) => {
-  if (socket && socket.connected) {
-    socket.emit('private-message', data);
+  // Déconnexion du serveur socket
+  disconnect: () => {
+    if (socket) {
+      socket.disconnect();
+      socket = null;
+      console.log('Socket disconnected manually');
+      return true;
+    }
+    return false;
+  },
+
+  // Vérification de la connexion
+  isConnected: () => {
+    return socket && socket.connected;
+  },
+
+  // Configuration des gestionnaires d'événements - à appeler après une connexion réussie
+  setupEventHandlers: (messageHandler, groupMessageHandler, deliveryHandler, typingHandler) => {
+    if (!socket) {
+      console.error('Socket not connected, cannot setup handlers');
+      return false;
+    }
+
+    // Suppression des anciens gestionnaires s'ils existent
+    socket.off('private-message');
+    socket.off('group-message');
+    socket.off('message-delivered');
+    socket.off('typing');
+
+    // Ajout des nouveaux gestionnaires
+    if (messageHandler) socket.on('private-message', messageHandler);
+    if (groupMessageHandler) socket.on('group-message', groupMessageHandler);
+    if (deliveryHandler) socket.on('message-delivered', deliveryHandler);
+    if (typingHandler) socket.on('typing', typingHandler);
+
     return true;
-  }
-  return false;
-};
+  },
 
-/**
- * Envoi d'un message de groupe via socket
- * @param {Object} data - Données du message
- * @returns {boolean} - Succès de l'envoi
- */
-const sendGroupMessage = (data) => {
-  if (socket && socket.connected) {
-    socket.emit('group-message', data);
+  // Joindre un groupe de discussion
+  joinGroup: (groupId) => {
+    if (!socket || !socket.connected) {
+      console.error('Socket not connected, cannot join group');
+      return false;
+    }
+
+    socket.emit('join-group', groupId);
     return true;
-  }
-  return false;
-};
+  },
 
-/**
- * Envoi d'un indicateur de frappe via socket
- * @param {Object} data - Données de frappe
- * @returns {boolean} - Succès de l'envoi
- */
-const sendTypingIndicator = (data) => {
-  if (socket && socket.connected) {
+  // Quitter un groupe de discussion
+  leaveGroup: (groupId) => {
+    if (!socket || !socket.connected) {
+      console.error('Socket not connected, cannot leave group');
+      return false;
+    }
+
+    socket.emit('leave-group', groupId);
+    return true;
+  },
+
+  // Envoi d'un message privé
+  sendPrivateMessage: (messageData) => {
+    if (!socket || !socket.connected) {
+      console.error('Socket not connected, cannot send private message');
+      return false;
+    }
+
+    socket.emit('private-message', messageData);
+    return true;
+  },
+
+  // Envoi d'un message de groupe
+  sendGroupMessage: (messageData) => {
+    if (!socket || !socket.connected) {
+      console.error('Socket not connected, cannot send group message');
+      return false;
+    }
+
+    socket.emit('group-message', messageData);
+    return true;
+  },
+
+  // Envoi d'un indicateur de frappe
+  sendTypingIndicator: (data) => {
+    if (!socket || !socket.connected) {
+      return false;
+    }
+
     socket.emit('typing', data);
     return true;
-  }
-  return false;
-};
+  },
 
-/**
- * Rejoindre un groupe
- * @param {string} groupId - ID du groupe
- */
-const joinGroup = (groupId) => {
-  if (socket && socket.connected) {
-    socket.emit('join-group', groupId);
-  }
-};
-
-/**
- * Quitter un groupe
- * @param {string} groupId - ID du groupe
- */
-const leaveGroup = (groupId) => {
-  if (socket && socket.connected) {
-    socket.emit('leave-group', groupId);
-  }
-};
-
-/**
- * Déconnexion du socket
- */
-const disconnect = () => {
-  if (socket) {
-    socket.disconnect();
-  }
-};
-
-/**
- * Vérification de la connexion du socket
- * @returns {boolean} - État de la connexion
- */
-const isConnected = () => {
-  return socket && socket.connected;
-};
-
-/**
- * Affichage d'une notification navigateur
- * @param {string} title - Titre de la notification
- * @param {string} body - Corps de la notification
- */
-const showNotification = (title, body) => {
-  if ('Notification' in window) {
-    if (Notification.permission === 'granted') {
-      new Notification(title, {
-        body,
-        icon: '/logo192.png',
-      });
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then((permission) => {
-        if (permission === 'granted') {
-          new Notification(title, {
-            body,
-            icon: '/logo192.png',
-          });
-        }
-      });
+  // Rejoindre tous les groupes donnés
+  joinGroups: (groups) => {
+    if (!socket || !socket.connected || !Array.isArray(groups)) {
+      return false;
     }
+
+    groups.forEach(group => {
+      if (group && group.id) {
+        socket.emit('join-group', group.id);
+      }
+    });
+    return true;
   }
 };
 
-export default {
-  initSocket,
-  sendPrivateMessage,
-  sendGroupMessage,
-  sendTypingIndicator,
-  joinGroup,
-  leaveGroup,
-  disconnect,
-  isConnected,
-};
+export default socketService;

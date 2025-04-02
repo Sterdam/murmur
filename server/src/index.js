@@ -10,6 +10,7 @@ const routes = require('./routes');
 const socketHandlers = require('./services/socket');
 const errorMiddleware = require('./middleware/error');
 const { setupRedis } = require('./services/redis');
+const corsOptions = require('./config/cors');
 
 // Initialize express app
 const app = express();
@@ -19,9 +20,24 @@ const server = http.createServer(app);
 setupRedis();
 
 // Security middleware
-app.use(helmet());
-app.use(cors());
+app.use(helmet({
+  // Permettre les connexions depuis différentes origines
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// Appliquer les options CORS configurées
+app.use(cors(corsOptions));
+
 app.use(express.json({ limit: '1mb' }));
+
+// Ajouter un middleware pour afficher l'environnement au démarrage
+app.use((req, res, next) => {
+  if (req.path === '/') {
+    console.log(`Environnement: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`CORS configuré pour: ${JSON.stringify(corsOptions.origin)}`);
+  }
+  next();
+});
 
 // Geo restriction middleware
 const geoRestriction = require('./middleware/geoRestriction');
@@ -45,13 +61,12 @@ app.use('/api', routes);
 // Error handling middleware
 app.use(errorMiddleware);
 
-// Setup Socket.io
+// Setup Socket.io with CORS options
 const io = socketIo(server, {
   cors: {
-    origin: process.env.NODE_ENV === 'production' 
-      ? 'https://murmur.app' 
-      : 'http://localhost:3000',
-    methods: ['GET', 'POST'],
+    origin: corsOptions.origin,
+    methods: corsOptions.methods,
+    credentials: corsOptions.credentials
   },
 });
 
@@ -62,6 +77,7 @@ socketHandlers(io);
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
 });
 
 module.exports = server; // For testing purposes

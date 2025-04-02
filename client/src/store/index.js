@@ -39,4 +39,8 @@ const store = configureStore({
   devTools: process.env.NODE_ENV !== 'production',
 });
 
+// Exposer getState et dispatch pour un accès global (utilisé par socket.js)
+export const getStoreState = () => store.getState();
+export const dispatchStoreAction = (action) => store.dispatch(action);
+
 export default store;

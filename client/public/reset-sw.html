@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Reset Service Worker</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    button {
+      padding: 10px 15px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .success {
+      background-color: #d4edda;
+      color: #155724;
+    }
+    .error {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+  </style>
+</head>
+<body>
+  <h1>Reset Service Worker and Cache</h1>
+  <p>This page will help you reset the service worker and clear browser caches for this application.</p>
+  <button id="reset">Reset Service Worker & Clear Cache</button>
+  <div id="status"></div>
+
+  <script>
+    document.getElementById('reset').addEventListener('click', async function() {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Cleaning up...';
+      statusEl.className = '';
+      
+      try {
+        // Unregister service workers
+        if ('serviceWorker' in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          for (const registration of registrations) {
+            await registration.unregister();
+            console.log('Service worker unregistered:', registration);
+          }
+        }
+        
+        // Clear cache
+        if ('caches' in window) {
+          const cacheNames = await caches.keys();
+          for (const cacheName of cacheNames) {
+            await caches.delete(cacheName);
+            console.log('Cache deleted:', cacheName);
+          }
+        }
+        
+        statusEl.textContent = 'Service workers unregistered and caches cleared successfully! Please close all tabs of this application and reopen.';
+        statusEl.className = 'success';
+      } catch (error) {
+        console.error('Error clearing service workers and cache:', error);
+        statusEl.textContent = 'Error: ' + error.message;
+        statusEl.className = 'error';
+      }
+    });
+  </script>
+</body>
+</html>

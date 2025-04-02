@@ -1,9 +1,15 @@
 // client/src/services/api.js
 import axios from 'axios';
+import envConfig from '../config/env';
 
 // Configuration de base de l'API
-// Utilisation d'une URL relative pour éviter les problèmes de CORS
-const baseURL = '/api';
+// Utilisation des variables d'environnement pour l'URL de base
+const baseURL = process.env.REACT_APP_API_URL || envConfig.apiUrl;
+
+// Debug log pour vérifier l'URL utilisée
+console.log('API URL:', baseURL);
+console.log('Environment:', process.env.NODE_ENV);
+console.log('REACT_APP_ENV:', process.env.REACT_APP_ENV);
 
 // Création de l'instance axios avec la configuration initiale
 const api = axios.create({
@@ -12,6 +18,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Important pour les cookies CORS
 });
 
 // Intercepteur de requêtes pour ajouter le token d'authentification
@@ -67,5 +74,8 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+// Exporter l'URL de base pour référence
+export const getBaseUrl = () => baseURL;
 
 export default api;

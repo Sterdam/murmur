@@ -22,6 +22,10 @@ ENV SKIP_PREFLIGHT_CHECK=true
 ENV DISABLE_ESLINT_PLUGIN=true
 ENV GENERATE_SOURCEMAP=false
 ENV CI=false
+ENV NODE_ENV=development
+ENV REACT_APP_ENV=development
+ENV REACT_APP_API_URL=http://localhost:5000/api
+ENV REACT_APP_SOCKET_URL=http://localhost:5000
 
 # Construire l'application (avec plusieurs tentatives de fallback)
 RUN npm run build:fix || npm run build:safe || npm run build:react || npm run build:fallback

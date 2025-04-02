@@ -93,9 +93,17 @@ const Register = () => {
       };
       
       console.log("Dispatching registration action...");
-      await dispatch(registerUser(userData)).unwrap();
+      const result = await dispatch(registerUser(userData)).unwrap();
+      console.log("Registration successful:", result);
       
-      // La redirection sera gérée par l'effet useEffect ci-dessus
+      // Forcer une courte attente pour permettre la mise à jour du state
+      setTimeout(() => {
+        // La redirection sera gérée par l'effet useEffect ci-dessus
+        if (!isAuthenticated) {
+          console.log("Redirecting manually...");
+          navigate('/');
+        }
+      }, 500);
     } catch (error) {
       console.error('Registration failed:', error);
     }

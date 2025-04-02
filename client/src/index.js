@@ -24,6 +24,5 @@ root.render(
   </React.StrictMode>
 );
 
-// If you want your app to work offline and load faster, you can change
-// unregister() to register() below.
-serviceWorkerRegistration.register();
+// Service worker désactivé en développement
+serviceWorkerRegistration.unregister();
