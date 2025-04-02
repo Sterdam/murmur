@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import styled from 'styled-components';
 import { fetchConversationMessages } from '../../store/slices/messagesSlice';
+import { FiAlertCircle, FiRefreshCw } from 'react-icons/fi';
 
 // Components
 import Avatar from '../ui/Avatar';
@@ -12,6 +13,7 @@ const ListContainer = styled.div`
   padding: 16px;
   display: flex;
   flex-direction: column;
+  scroll-behavior: smooth;
 `;
 
 const MessageGroup = styled.div`
@@ -50,6 +52,12 @@ const MessageContent = styled.div`
     border-top-right-radius: ${({ sent }) => (sent ? 4 : 18)}px;
     border-top-left-radius: ${({ sent }) => (sent ? 18 : 4)}px;
   }
+  
+  /* Style pour les messages chiffrés qu'on ne peut pas déchiffrer */
+  ${({ encrypted }) => encrypted && `
+    font-style: italic;
+    opacity: 0.7;
+  `}
 `;
 
 const Timestamp = styled.span`
@@ -107,6 +115,7 @@ const EmptyState = styled.div`
   
   p {
     max-width: 400px;
+    margin-bottom: 16px;
   }
 `;
 
@@ -129,52 +138,69 @@ const ErrorState = styled.div`
     max-width: 400px;
     margin-bottom: 15px;
   }
+`;
+
+const LoadingIndicator = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 20px 0;
   
-  button {
-    background-color: ${({ theme }) => theme.colors.primary};
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 500;
-    
-    &:hover {
-      background-color: ${({ theme }) => theme.colors.primaryDark};
-    }
+  svg {
+    animation: spin 1s linear infinite;
+    margin-bottom: 8px;
+    opacity: 0.7;
+  }
+  
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  
+  span {
+    font-size: 0.875rem;
+    color: ${({ theme }) => theme.colors.textSecondary};
   }
 `;
 
-// Fonction simple pour formater la date sans dépendance externe
-const formatSimpleDate = (date) => {
-  if (!date) return '';
+const StyledButton = styled.button`
+  background-color: ${({ theme }) => theme.colors.primary};
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   
-  const d = new Date(date);
-  return d.toLocaleDateString();
-};
-
-// Fonction simple pour formater l'heure sans dépendance externe
-const formatSimpleTime = (date) => {
-  if (!date) return '';
+  &:hover {
+    background-color: ${({ theme }) => theme.colors.primaryDark};
+  }
   
-  const d = new Date(date);
-  let hours = d.getHours();
-  const minutes = d.getMinutes();
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  
-  hours = hours % 12;
-  hours = hours ? hours : 12; // '0' devient '12'
-  
-  return `${hours}:${minutes < 10 ? '0' + minutes : minutes} ${ampm}`;
-};
+  svg {
+    margin-right: 8px;
+  }
+`;
 
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
   const { conversations, loading, error } = useSelector((state) => state.messages);
   const { user } = useSelector((state) => state.auth);
   
-  // Normaliser l'ID de conversation pour assurer la cohérence
-  const getNormalizedId = (id) => {
+  const listContainerRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const [localError, setLocalError] = useState(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [hasNewMessages, setHasNewMessages] = useState(false);
+  const [oldScrollHeight, setOldScrollHeight] = useState(0);
+  
+  // Fonction memoïsée pour normaliser les IDs de conversation
+  const getNormalizedId = useCallback((id) => {
+    if (!id) return '';
+    
     if (id.startsWith('group:')) return id;
     
     if (id.includes(':')) {
@@ -184,87 +210,176 @@ const MessageList = ({ conversationId }) => {
       }
     }
     
-    return id; // Format UUID ou autre, retourner tel quel
-  };
+    return id;
+  }, []);
   
   const normalizedId = getNormalizedId(conversationId);
-  const messages = conversations[normalizedId] || conversations[conversationId] || [];
   
-  const messagesEndRef = useRef(null);
-  const [refreshInterval, setRefreshInterval] = useState(null);
-  const [localError, setLocalError] = useState(null);
+  // Récupérer les messages avec fallback sur l'ID non normalisé si nécessaire
+  const messages = useSelector(state => {
+    const messagesFromStore = 
+      state.messages.conversations[normalizedId] || 
+      state.messages.conversations[conversationId] || 
+      [];
+    
+    // S'assurer que l'array est valide
+    return Array.isArray(messagesFromStore) ? messagesFromStore : [];
+  });
   
-  // Récupérer les messages au chargement et démarrer un intervalle
+  // Récupérer les messages lorsque l'ID de conversation change
   useEffect(() => {
-    if (conversationId) {
-      console.log('Fetching messages for conversation:', conversationId);
-      
-      // Récupération initiale après un court délai
-      const initialTimeout = setTimeout(() => {
-        dispatch(fetchConversationMessages(conversationId))
-          .unwrap()
-          .catch(err => {
-            console.error('Failed initial message fetch:', err);
-            setLocalError(err);
-          });
-      }, 800);
-      
-      // Rafraîchir moins fréquemment (30 secondes)
-      const intervalId = setInterval(() => {
-        console.log('Auto-refreshing messages for conversation:', conversationId);
-        dispatch(fetchConversationMessages(conversationId))
-          .unwrap()
-          .catch(err => {
-            console.error('Failed to refresh messages:', err);
-            // Ne pas mettre à jour l'erreur locale ici pour éviter de bloquer l'interface
-          });
-      }, 30000); // Augmenté à 30 secondes
-      
-      setRefreshInterval(intervalId);
-      
-      return () => {
-        // Nettoyage à la démontage
-        clearTimeout(initialTimeout);
-        if (refreshInterval) {
-          clearInterval(refreshInterval);
-        }
-        setLocalError(null);
-      };
-    }
+    if (!conversationId) return;
+    
+    // Nettoyer les erreurs précédentes
+    setLocalError(null);
+    setIsInitialLoad(true);
+    
+    // Fonction pour charger les messages
+    const loadMessages = async () => {
+      try {
+        await dispatch(fetchConversationMessages(conversationId)).unwrap();
+        setIsInitialLoad(false);
+      } catch (err) {
+        console.error('Failed to fetch messages:', err);
+        setLocalError(err);
+        setIsInitialLoad(false);
+      }
+    };
+    
+    // Charger les messages initialement
+    loadMessages();
+    
+    // Configurer un intervalle pour rafraîchir périodiquement (toutes les 60 secondes)
+    const intervalId = setInterval(() => {
+      loadMessages().catch(err => {
+        console.warn('Background message refresh failed:', err);
+        // Ne pas mettre à jour l'erreur pour les rafraîchissements en arrière-plan
+      });
+    }, 60000);
+    
+    return () => {
+      clearInterval(intervalId);
+      setLocalError(null);
+    };
   }, [conversationId, dispatch]);
   
-  // Auto-scroll to bottom on new messages
+  // Surveiller les changements dans les messages pour détecter les nouveaux messages
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (listContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = listContainerRef.current;
+      const atBottom = scrollHeight - scrollTop - clientHeight < 50;
+      
+      // Si nous sommes en bas ou c'est le chargement initial, faire défiler vers le bas
+      if (atBottom || isInitialLoad) {
+        // Utiliser un timeout pour s'assurer que le DOM est mis à jour
+        setTimeout(() => {
+          if (messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({ behavior: isInitialLoad ? 'auto' : 'smooth' });
+          }
+        }, 100);
+      } else if (scrollHeight > oldScrollHeight) {
+        // Si de nouveaux messages sont arrivés mais nous ne sommes pas en bas
+        setHasNewMessages(true);
+      }
+      
+      // Enregistrer la hauteur de défilement actuelle pour la comparaison
+      setOldScrollHeight(scrollHeight);
     }
-  }, [messages]);
+  }, [messages, isInitialLoad, oldScrollHeight]);
   
-  // Réessayer en cas d'erreur
-  const handleRetry = () => {
+  // Fonction pour réessayer de charger les messages en cas d'erreur
+  const handleRetry = async () => {
     setLocalError(null);
-    dispatch(fetchConversationMessages(conversationId))
-      .unwrap()
-      .catch(err => {
-        console.error('Retry failed:', err);
-        setLocalError(err);
-      });
+    try {
+      await dispatch(fetchConversationMessages(conversationId)).unwrap();
+    } catch (err) {
+      console.error('Retry failed:', err);
+      setLocalError(err);
+    }
   };
   
-  // Afficher un message d'erreur approprié
+  // Fonction pour faire défiler jusqu'aux nouveaux messages
+  const scrollToBottom = () => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      setHasNewMessages(false);
+    }
+  };
+  
+  // Formatter les dates
+  const formatDate = (dateString) => {
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        return 'Invalid date';
+      }
+      
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      
+      if (date.toDateString() === today.toDateString()) {
+        return 'Today';
+      } else if (date.toDateString() === yesterday.toDateString()) {
+        return 'Yesterday';
+      } else {
+        return date.toLocaleDateString(undefined, { 
+          year: 'numeric', 
+          month: 'short', 
+          day: 'numeric' 
+        });
+      }
+    } catch (error) {
+      console.error('Date formatting error:', error);
+      return 'Unknown date';
+    }
+  };
+  
+  // Formater l'heure
+  const formatTime = (timestamp) => {
+    try {
+      if (!timestamp) return '';
+      
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        return '';
+      }
+      
+      return date.toLocaleTimeString(undefined, { 
+        hour: '2-digit', 
+        minute: '2-digit'
+      });
+    } catch (error) {
+      console.error('Time formatting error:', error);
+      return '';
+    }
+  };
+  
+  // Vérifier si un message contient une indication de chiffrement échouée
+  const isEncryptedMessage = (message) => {
+    return message && typeof message === 'string' && 
+      (message.includes('[Encrypted message') || 
+       message.includes('Cannot decrypt'));
+  };
+  
+  // Afficher un état d'erreur
   if (localError || error) {
     const errorMessage = localError || error;
     
     // Erreur d'accès non autorisé
-    if (errorMessage.includes('Unauthorized access')) {
+    if (typeof errorMessage === 'string' && errorMessage.includes('Unauthorized access')) {
       return (
         <ErrorState>
+          <FiAlertCircle size={40} />
           <h3>Accès non autorisé</h3>
           <p>
             Vous n'avez pas les permissions nécessaires pour accéder à cette conversation 
             ou l'identifiant de conversation est invalide.
           </p>
-          <button onClick={handleRetry}>Réessayer</button>
+          <StyledButton onClick={handleRetry}>
+            <FiRefreshCw />
+            Réessayer
+          </StyledButton>
         </ErrorState>
       );
     }
@@ -272,63 +387,106 @@ const MessageList = ({ conversationId }) => {
     // Autres erreurs
     return (
       <ErrorState>
+        <FiAlertCircle size={40} />
         <h3>Erreur lors du chargement des messages</h3>
         <p>{errorMessage || "Une erreur s'est produite lors de la récupération des messages."}</p>
-        <button onClick={handleRetry}>Réessayer</button>
+        <StyledButton onClick={handleRetry}>
+          <FiRefreshCw />
+          Réessayer
+        </StyledButton>
       </ErrorState>
     );
   }
   
-  // Group messages by date, with safety check for message.timestamp
-  const groupedMessages = messages.reduce((groups, message) => {
-    if (!message || !message.timestamp) {
-      console.warn('Invalid message detected:', message);
-      return groups;
-    }
-    
-    const date = new Date(message.timestamp).toDateString();
-    if (!groups[date]) {
-      groups[date] = [];
-    }
-    groups[date].push(message);
-    return groups;
-  }, {});
-  
-  // Format date
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    const today = new Date().toDateString();
-    const yesterday = new Date(Date.now() - 86400000).toDateString();
-    
-    if (date.toDateString() === today) {
-      return 'Today';
-    } else if (date.toDateString() === yesterday) {
-      return 'Yesterday';
-    } else {
-      return formatSimpleDate(date);
-    }
-  };
-  
+  // Afficher un état de chargement pour le chargement initial
   if (loading && messages.length === 0) {
     return (
       <EmptyState>
-        <h3>Loading messages...</h3>
-        <p>Please wait while we securely retrieve your conversation.</p>
+        <LoadingIndicator>
+          <FiRefreshCw size={30} />
+          <span>Chargement des messages...</span>
+        </LoadingIndicator>
+        <p>Veuillez patienter pendant que nous récupérons votre conversation de manière sécurisée.</p>
       </EmptyState>
     );
   }
   
+  // Afficher un état vide si aucun message
   if (!loading && messages.length === 0) {
     return (
       <EmptyState>
-        <h3>No messages yet</h3>
-        <p>Start the conversation by sending a message below.</p>
+        <h3>Aucun message pour le moment</h3>
+        <p>Commencez la conversation en envoyant un message ci-dessous.</p>
       </EmptyState>
     );
   }
   
+  // Grouper les messages par date avec gestion d'erreur robuste
+  const groupedMessages = messages.reduce((groups, message) => {
+    if (!message) return groups;
+    
+    try {
+      const timestamp = message.timestamp || Date.now();
+      const date = new Date(timestamp);
+      
+      // Vérifier que la date est valide
+      if (isNaN(date.getTime())) {
+        console.warn('Invalid timestamp in message:', message);
+        const fallbackDate = new Date().toDateString();
+        if (!groups[fallbackDate]) {
+          groups[fallbackDate] = [];
+        }
+        groups[fallbackDate].push(message);
+        return groups;
+      }
+      
+      const dateString = date.toDateString();
+      if (!groups[dateString]) {
+        groups[dateString] = [];
+      }
+      groups[dateString].push(message);
+    } catch (error) {
+      console.error('Error grouping message by date:', error, message);
+      // Utiliser une date de fallback pour les messages problématiques
+      const fallbackDate = 'Unknown Date';
+      if (!groups[fallbackDate]) {
+        groups[fallbackDate] = [];
+      }
+      groups[fallbackDate].push(message);
+    }
+    
+    return groups;
+  }, {});
+  
   return (
-    <ListContainer>
+    <ListContainer ref={listContainerRef}>
+      {/* Indicateur de chargement pour les rafraîchissements non initiaux */}
+      {loading && !isInitialLoad && (
+        <LoadingIndicator style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)' }}>
+          <FiRefreshCw size={20} />
+          <span>Rafraîchissement...</span>
+        </LoadingIndicator>
+      )}
+      
+      {/* Bouton pour défiler jusqu'aux nouveaux messages */}
+      {hasNewMessages && (
+        <StyledButton 
+          onClick={scrollToBottom}
+          style={{ 
+            position: 'fixed', 
+            bottom: '80px', 
+            left: '50%', 
+            transform: 'translateX(-50%)',
+            zIndex: 5,
+            boxShadow: '0 2px 10px rgba(0,0,0,0.3)'
+          }}
+        >
+          <FiRefreshCw />
+          Nouveaux messages
+        </StyledButton>
+      )}
+      
+      {/* Rendu des messages groupés par date */}
       {Object.keys(groupedMessages).map((date) => (
         <React.Fragment key={date}>
           <DateDivider>
@@ -336,12 +494,15 @@ const MessageList = ({ conversationId }) => {
           </DateDivider>
           
           {groupedMessages[date].map((message, index) => {
-            const sent = message.senderId === user.id;
+            if (!message) return null;
+            
+            const sent = message.senderId === user?.id;
             const showHeader = index === 0 || 
-              groupedMessages[date][index - 1].senderId !== message.senderId;
+              groupedMessages[date][index - 1]?.senderId !== message.senderId;
+            const isEncrypted = isEncryptedMessage(message.message);
             
             return (
-              <MessageGroup key={message.id} sent={sent}>
+              <MessageGroup key={message.id || index} sent={sent}>
                 {!sent && showHeader && (
                   <MessageHeader>
                     <Avatar name={message.senderUsername} size="small" />
@@ -349,7 +510,7 @@ const MessageList = ({ conversationId }) => {
                   </MessageHeader>
                 )}
                 
-                <MessageContent sent={sent}>
+                <MessageContent sent={sent} encrypted={isEncrypted}>
                   {message.message}
                   {sent && message.status && (
                     <MessageStatus>{message.status}</MessageStatus>
@@ -357,7 +518,7 @@ const MessageList = ({ conversationId }) => {
                 </MessageContent>
                 
                 <Timestamp sent={sent}>
-                  {formatSimpleTime(message.timestamp)}
+                  {formatTime(message.timestamp)}
                 </Timestamp>
               </MessageGroup>
             );

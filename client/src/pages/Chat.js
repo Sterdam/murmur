@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
-import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
+import { RiArrowLeftSLine, RiInformationLine, RiAlertCircleLine } from 'react-icons/ri';
 
 // Redux actions
 import { fetchConversationMessages, setActiveConversation } from '../store/slices/messagesSlice';
@@ -59,18 +59,35 @@ const ContactInfo = styled.div`
 
 const ContactDetails = styled.div`
   margin-left: 12px;
+  overflow: hidden;
 `;
 
 const ContactName = styled.h2`
   font-size: 1rem;
   font-weight: 500;
   margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
 `;
 
 const ContactStatus = styled.div`
   font-size: 0.75rem;
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme, online }) => online ? '#4caf50' : theme.colors.textSecondary};
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  
+  &::before {
+    content: '';
+    display: ${({ online }) => online ? 'block' : 'none'};
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #4caf50;
+    margin-right: 4px;
+  }
 `;
 
 const InfoButton = styled.button`
@@ -98,6 +115,7 @@ const ChatContent = styled.div`
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 `;
 
 const LoadingContainer = styled.div`
@@ -117,6 +135,13 @@ const ErrorContainer = styled.div`
   text-align: center;
   padding: 20px;
   
+  svg {
+    font-size: 40px;
+    color: ${({ theme }) => theme.colors.error};
+    margin-bottom: 16px;
+    opacity: 0.8;
+  }
+  
   h3 {
     color: ${({ theme }) => theme.colors.error};
     margin-bottom: 10px;
@@ -127,20 +152,62 @@ const ErrorContainer = styled.div`
     max-width: 500px;
     margin-bottom: 20px;
   }
+`;
+
+const StyledButton = styled.button`
+  background-color: ${({ theme }) => theme.colors.primary};
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   
-  button {
-    background-color: ${({ theme }) => theme.colors.primary};
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-weight: 500;
-    
-    &:hover {
-      background-color: ${({ theme }) => theme.colors.primaryDark};
-    }
+  &:hover {
+    background-color: ${({ theme }) => theme.colors.primaryDark};
   }
+  
+  svg {
+    margin-right: 8px;
+  }
+`;
+
+const InfoPanel = styled.div`
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 300px;
+  background-color: ${({ theme }) => theme.colors.surface};
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.2);
+  z-index: 20;
+  transform: translateX(${({ open }) => (open ? '0' : '100%')});
+  transition: transform 0.3s ease;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+`;
+
+const InfoPanelHeader = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  
+  h3 {
+    margin: 0;
+  }
+`;
+
+const CloseButton = styled.button`
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: ${({ theme }) => theme.colors.textPrimary};
 `;
 
 const Chat = () => {
@@ -148,17 +215,23 @@ const Chat = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
-  const { contacts } = useSelector((state) => state.contacts);
-  const { groups } = useSelector((state) => state.groups);
+  const { contacts, loading: contactsLoading } = useSelector((state) => state.contacts);
+  const { groups, loading: groupsLoading } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
   const { loading: messagesLoading, error: messagesError } = useSelector((state) => state.messages);
   
   const [conversation, setConversation] = useState(null);
   const [isGroup, setIsGroup] = useState(false);
   const [error, setError] = useState(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [onlineStatus, setOnlineStatus] = useState(false);
   
-  // Fonction pour normaliser l'ID de conversation
-  const normalizeConversationId = (rawId) => {
+  const loadedRef = useRef(false);
+  
+  // Fonction memoïsée pour normaliser l'ID de conversation
+  const normalizeConversationId = useCallback((rawId) => {
+    if (!rawId) return '';
+    
     // Vérifier si c'est déjà un ID de groupe
     if (rawId.startsWith('group:')) {
       return rawId;
@@ -172,23 +245,36 @@ const Chat = () => {
       }
     }
     
-    // Si c'est un UUID ou autre format non reconnu, on le retourne tel quel
-    // Le serveur a été modifié pour accepter temporairement ces formats
     console.warn(`Format d'ID de conversation non standard détecté: ${rawId}`);
     return rawId;
-  };
+  }, []);
   
   // Load contacts and groups if needed
   useEffect(() => {
-    if (contacts.length === 0) {
-      dispatch(fetchContacts());
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      
+      const loadData = async () => {
+        try {
+          // Charger les contacts si nécessaire
+          if (contacts.length === 0 && !contactsLoading) {
+            await dispatch(fetchContacts()).unwrap();
+          }
+          
+          // Charger les groupes si nécessaire
+          if (groups.length === 0 && !groupsLoading) {
+            await dispatch(fetchGroups()).unwrap();
+          }
+        } catch (err) {
+          console.error('Error loading initial data:', err);
+        }
+      };
+      
+      loadData();
     }
-    if (groups.length === 0) {
-      dispatch(fetchGroups());
-    }
-  }, [dispatch, contacts.length, groups.length]);
+  }, [dispatch, contacts.length, groups.length, contactsLoading, groupsLoading]);
   
-  // Set up the conversation details based on the conversationId
+  // Configurer les détails de la conversation basés sur l'ID
   useEffect(() => {
     if (!conversationId) return;
     
@@ -197,95 +283,115 @@ const Chat = () => {
     
     // Normaliser l'ID de conversation
     const normalizedId = normalizeConversationId(conversationId);
-    console.log('Setting up conversation:', normalizedId);
     
-    // First, determine if this is a group conversation
+    // Déterminer si c'est une conversation de groupe
     const groupChat = normalizedId.startsWith('group:');
     setIsGroup(groupChat);
     
     let currentConversation = null;
     
     if (groupChat) {
-      // For group chats, extract the groupId and find the group
+      // Pour les conversations de groupe, extraire l'ID du groupe et trouver le groupe
       const groupId = normalizedId.replace('group:', '');
-      console.log('Looking for group with ID:', groupId);
       
       const group = groups.find(g => g.id === groupId);
       if (group) {
-        console.log('Found group:', group.name);
         currentConversation = {
           ...group,
           isGroup: true
         };
-      } else {
-        console.log('Group not found in:', groups);
-        // Ne pas définir d'erreur immédiatement, car les groupes peuvent être en cours de chargement
+      } else if (!groupsLoading && groups.length > 0) {
+        // Si les groupes sont chargés mais aucun ne correspond, c'est une erreur
+        console.error('Group not found:', groupId);
+        setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
     } else if (normalizedId.includes(':')) {
-      // For direct chats, the conversation ID is the sorted user IDs joined with ':'
+      // Pour les conversations directes
       if (user && contacts.length > 0) {
-        // Find the other user's ID in the conversation
+        // Trouver l'ID de l'autre utilisateur dans la conversation
         const participants = normalizedId.split(':');
-        console.log('Conversation participants:', participants, 'Current user:', user.id);
-        
         const otherUserId = participants[0] === user.id ? participants[1] : participants[0];
-        console.log('Looking for contact with ID:', otherUserId);
         
-        // Find the contact with this ID
+        // Trouver le contact avec cet ID
         const contact = contacts.find(c => c.id === otherUserId);
         if (contact) {
-          console.log('Found contact:', contact.username);
           currentConversation = {
             ...contact,
             isGroup: false
           };
-        } else {
-          console.log('Contact not found in:', contacts.map(c => `${c.username}(${c.id})`));
-          // Ne pas définir d'erreur immédiatement, car les contacts peuvent être en cours de chargement
+          
+          // Simuler un statut en ligne aléatoire (pour démo)
+          setOnlineStatus(Math.random() > 0.5);
+        } else if (!contactsLoading && contacts.length > 0) {
+          // Si les contacts sont chargés mais aucun ne correspond, c'est une erreur
+          console.error('Contact not found:', otherUserId);
+          setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
     } else {
-      // Format d'ID non standard (probablement un ancien UUID)
-      console.log('Non-standard conversation ID format, will attempt to fetch anyway');
-      // On ne définit pas d'erreur, on va essayer de récupérer quand même les messages
+      // Format d'ID non standard
+      console.warn('Non-standard conversation ID format, will attempt to fetch anyway');
+      // Pour ces cas, on crée un objet de conversation "minimal"
+      currentConversation = {
+        id: normalizedId,
+        name: "Conversation",
+        isGroup: false
+      };
     }
     
-    console.log('Setting conversation:', currentConversation);
     setConversation(currentConversation);
     
-    // Set active conversation
+    // Définir la conversation active dans Redux
     dispatch(setActiveConversation(normalizedId));
     
-    // Fetch messages - capturing any errors
-    console.log('Fetching messages for conversation:', normalizedId);
-    dispatch(fetchConversationMessages(normalizedId))
-      .unwrap()
-      .then(result => {
-        console.log('Messages fetch result:', result);
-      })
-      .catch(error => {
-        console.error('Failed to fetch messages:', error);
-        setError(error);
-      });
+    // Charger les messages avec gestion d'erreur
+    if (!messagesLoading) {
+      dispatch(fetchConversationMessages(normalizedId))
+        .unwrap()
+        .catch(err => {
+          console.error('Failed to fetch messages:', err);
+          setError(err);
+        });
+    }
     
     return () => {
-      // Clear active conversation when unmounting
+      // Effacer la conversation active au démontage
       dispatch(setActiveConversation(null));
     };
-  }, [conversationId, dispatch, groups, contacts, user]);
+  }, [conversationId, dispatch, groups, contacts, user, normalizeConversationId, groupsLoading, contactsLoading, messagesLoading]);
+  
+  // Mettre à jour l'erreur si une erreur Redux est détectée
+  useEffect(() => {
+    if (messagesError && !error) {
+      setError(messagesError);
+    }
+  }, [messagesError, error]);
   
   const handleBack = () => {
     navigate('/');
   };
   
-  const handleInfoClick = () => {
-    // Would typically open a sidebar or modal with conversation details
-    // For now we'll just log the information
-    console.log('Conversation details:', conversation);
+  const toggleInfoPanel = () => {
+    setInfoOpen(!infoOpen);
   };
   
-  // Si nous avons une erreur d'accès à la conversation
-  if (error && error.includes('Unauthorized access')) {
+  // Si nous avons une erreur
+  if (error) {
+    let errorMessage = "Une erreur s'est produite";
+    let errorDetails = "Impossible de charger cette conversation. Veuillez vérifier votre connexion et réessayer.";
+    
+    if (typeof error === 'string') {
+      if (error.includes('Unauthorized access')) {
+        errorMessage = "Accès non autorisé";
+        errorDetails = "Vous n'avez pas les permissions nécessaires pour accéder à cette conversation ou l'identifiant est incorrect.";
+      } else if (error.includes('not found') || error.includes('non trouvé')) {
+        errorMessage = "Conversation introuvable";
+        errorDetails = error;
+      } else {
+        errorDetails = error;
+      }
+    }
+    
     return (
       <ChatContainer>
         <ChatHeader>
@@ -293,20 +399,89 @@ const Chat = () => {
             <RiArrowLeftSLine />
           </BackButton>
           <ContactInfo>
-            <ContactName>Erreur d'accès</ContactName>
+            <ContactName>Erreur</ContactName>
           </ContactInfo>
         </ChatHeader>
         
         <ErrorContainer>
-          <h3>Impossible d'accéder à cette conversation</h3>
-          <p>
-            Vous n'avez pas les autorisations nécessaires pour accéder à cette conversation ou le format de l'identifiant est incorrect.
-          </p>
-          <button onClick={handleBack}>Retourner à l'accueil</button>
+          <RiAlertCircleLine />
+          <h3>{errorMessage}</h3>
+          <p>{errorDetails}</p>
+          <StyledButton onClick={handleBack}>
+            Retourner à l'accueil
+          </StyledButton>
         </ErrorContainer>
       </ChatContainer>
     );
   }
+  
+  // Contenu du panneau d'information
+  const renderInfoPanel = () => {
+    if (!conversation) return null;
+    
+    return (
+      <InfoPanel open={infoOpen}>
+        <InfoPanelHeader>
+          <h3>Informations</h3>
+          <CloseButton onClick={toggleInfoPanel}>&times;</CloseButton>
+        </InfoPanelHeader>
+        
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '20px' }}>
+          <Avatar 
+            name={conversation.displayName || conversation.name || conversation.username} 
+            src={conversation.avatar}
+            color={conversation.isGroup ? '#03dac6' : undefined}
+            size="large"
+          />
+          <h3 style={{ marginTop: '10px', marginBottom: '5px' }}>
+            {conversation.displayName || conversation.name || conversation.username}
+          </h3>
+          {!isGroup && (
+            <p style={{ margin: 0, color: 'rgba(255,255,255,0.7)', fontSize: '0.9rem' }}>
+              @{conversation.username}
+            </p>
+          )}
+        </div>
+        
+        {isGroup && conversation.members && (
+          <div>
+            <h4>Membres ({conversation.members.length})</h4>
+            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+              {conversation.members.map(memberId => {
+                const member = contacts.find(c => c.id === memberId) || { id: memberId, username: 'Inconnu' };
+                return (
+                  <div key={memberId} style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    padding: '8px 0',
+                    borderBottom: '1px solid rgba(255,255,255,0.1)'
+                  }}>
+                    <Avatar 
+                      name={member.displayName || member.username} 
+                      size="small"
+                    />
+                    <span style={{ marginLeft: '10px' }}>
+                      {member.displayName || member.username}
+                      {member.id === user?.id && ' (Vous)'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        
+        {!isGroup && (
+          <div>
+            <h4>Options</h4>
+            <StyledButton style={{ width: '100%', marginTop: '10px' }}>
+              Voir le profil
+            </StyledButton>
+          </div>
+        )}
+      </InfoPanel>
+    );
+  };
   
   return (
     <ChatContainer>
@@ -327,25 +502,25 @@ const Chat = () => {
                 <ContactName>
                   {conversation.displayName || conversation.name || conversation.username}
                 </ContactName>
-                <ContactStatus>
-                  {conversation.isGroup 
-                    ? `${conversation.members?.length || 0} members` 
-                    : 'Online'} {/* Status would be dynamic in a real app */}
+                <ContactStatus online={!isGroup && onlineStatus}>
+                  {isGroup 
+                    ? `${conversation.members?.length || 0} membres` 
+                    : onlineStatus ? 'En ligne' : 'Hors ligne'}
                 </ContactStatus>
               </ContactDetails>
             </>
           ) : (
             <>
-              <Avatar name="Unknown" />
+              <Avatar name="..." />
               <ContactDetails>
-                <ContactName>Conversation</ContactName>
-                <ContactStatus>Loading...</ContactStatus>
+                <ContactName>Chargement...</ContactName>
+                <ContactStatus>Veuillez patienter</ContactStatus>
               </ContactDetails>
             </>
           )}
         </ContactInfo>
         
-        <InfoButton onClick={handleInfoClick}>
+        <InfoButton onClick={toggleInfoPanel}>
           <RiInformationLine />
         </InfoButton>
       </ChatHeader>
@@ -353,7 +528,7 @@ const Chat = () => {
       <ChatContent>
         {messagesLoading && !conversation ? (
           <LoadingContainer>
-            <p>Loading conversation...</p>
+            <p>Chargement de la conversation...</p>
           </LoadingContainer>
         ) : (
           <>
@@ -365,6 +540,8 @@ const Chat = () => {
             />
           </>
         )}
+        
+        {renderInfoPanel()}
       </ChatContent>
     </ChatContainer>
   );

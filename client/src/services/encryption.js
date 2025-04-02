@@ -1,84 +1,70 @@
-// client/src/services/encryption.js - Version améliorée et plus sécurisée
-// Service d'encryption avancé avec plusieurs couches de sécurité
-
 /**
- * Service de cryptage ultra-sécurisé implémentant:
- * - RSA-OAEP 4096 bits pour l'échange de clés avec padding optimal
- * - AES-GCM 256 bits pour le chiffrement symétrique des messages avec nonce unique
- * - ECDSA P-384 pour les signatures numériques avec protection contre les attaques par canaux auxiliaires
- * - Perfect Forward Secrecy (PFS) avec ECDH P-521 (meilleure courbe elliptique)
- * - Protection contre la cryptanalyse quantique (couche préventive)
- * - Mécanisme de rotation automatique des clés avec expiration
- * - Contrôles d'intégrité à chaque étape du processus
- * - Protection contre les attaques par force brute et par rejeu
- * - Vérification cryptographique de l'authenticité des messages
+ * Service de chiffrement pour la messagerie sécurisée
+ * Implémente le chiffrement de bout en bout (E2EE) avec des primitives modernes:
+ * - RSA-OAEP pour l'échange de clés
+ * - AES-GCM pour le chiffrement symétrique des messages
  */
 
-// Constantes cryptographiques 
-const RSA_KEY_SIZE = 4096; // Taille des clés RSA en bits (maximale pour une sécurité optimale)
-const PBKDF2_ITERATIONS = 210000; // Nombre d'itérations pour la dérivation de clé (recommandé en 2024)
-const AES_KEY_SIZE = 256; // Taille des clés AES en bits
-const AUTH_TAG_SIZE = 128; // Taille du tag d'authentification en bits
-const KEY_ROTATION_DAYS = 30; // Rotation des clés tous les 30 jours
-const HASH_ALGORITHM = 'SHA-512'; // Algorithme de hachage
-const ECC_CURVE_SIGN = 'P-384'; // Courbe pour les signatures
-const ECC_CURVE_ECDH = 'P-521'; // Courbe pour l'échange Diffie-Hellman (PFS)
-
 /**
- * Génère une paire de clés RSA 4096 bits avec sauvegarde sécurisée
- * @returns {Promise<Object>} - Objet contenant les clés publique et privée
+ * Génère une paire de clés RSA pour le chiffrement asymétrique
+ * @returns {Promise<Object>} - Objet contenant les clés publique et privée au format JSON
  */
 export const generateKeyPair = async () => {
   try {
-    // Vérification de base de la disponibilité de l'API Web Crypto
+    // Vérification de la disponibilité de l'API Web Crypto
     if (!window.crypto || !window.crypto.subtle) {
       throw new Error("L'API Web Crypto n'est pas disponible sur ce navigateur");
     }
     
-    console.log("Début de la génération de clés...");
+    console.log("Début de la génération de clés");
     
-    // Pour le développement, utiliser des clés plus petites et plus rapides à générer
+    // Génération d'une paire de clés RSA-OAEP
     const keyPair = await window.crypto.subtle.generateKey(
       {
         name: 'RSA-OAEP',
-        modulusLength: 2048,  // Taille réduite pour le développement
-        publicExponent: new Uint8Array([0x01, 0x00, 0x01]),
-        hash: { name: 'SHA-256' }  // Hash plus rapide
+        modulusLength: 2048,  // 2048 bits pour un bon équilibre sécurité/performance
+        publicExponent: new Uint8Array([0x01, 0x00, 0x01]), // 65537
+        hash: { name: 'SHA-256' }
       },
-      true,
+      true, // extractable
       ['encrypt', 'decrypt']
     );
     
-    console.log("Paire de clés générée, export en cours...");
+    console.log("Paire de clés générée, export en cours");
     
-    // Exporter la clé publique
+    // Exporter la clé publique au format SPKI
     const publicKeyBuffer = await window.crypto.subtle.exportKey(
       'spki',
       keyPair.publicKey
     );
     
-    // Exporter la clé privée
+    // Exporter la clé privée au format PKCS8
     const privateKeyBuffer = await window.crypto.subtle.exportKey(
       'pkcs8',
       keyPair.privateKey
     );
     
-    // Convertir en format Base64
+    // Convertir en format Base64 pour stockage
     const publicKey = arrayBufferToBase64(publicKeyBuffer);
     const privateKey = arrayBufferToBase64(privateKeyBuffer);
     
     console.log("Clés exportées avec succès");
     
-    // Format simplifié pour le développement
+    // Créer un bundle de clés avec des métadonnées
     const keyBundle = {
       publicKey,
       privateKey,
       algorithm: 'RSA-OAEP-2048',
-      created: Date.now()
+      created: Date.now(),
+      keyId: generateRandomId() // Identifiant unique pour cette paire de clés
     };
     
     return {
-      publicKey: JSON.stringify({ key: keyBundle.publicKey }),
+      publicKey: JSON.stringify({ 
+        key: keyBundle.publicKey,
+        algorithm: keyBundle.algorithm,
+        keyId: keyBundle.keyId
+      }),
       privateKey: JSON.stringify(keyBundle)
     };
   } catch (error) {
@@ -87,15 +73,13 @@ export const generateKeyPair = async () => {
   }
 };
 
-
 /**
- * Chiffre un message avec plusieurs couches de sécurité
+ * Chiffre un message avec le chiffrement hybride RSA+AES
  * @param {string} message - Message à chiffrer
  * @param {string} recipientPublicKeyJson - Clé publique du destinataire (JSON)
- * @param {string} senderPrivateKeyJson - Clé privée de l'expéditeur pour signer (JSON)
- * @returns {Promise<Object>} - Objet contenant le message chiffré et les métadonnées
+ * @returns {Promise<Object>} - Données chiffrées et métadonnées
  */
-export const encryptMessage = async (message, recipientPublicKeyJson, senderPrivateKeyJson = null) => {
+export const encryptMessage = async (message, recipientPublicKeyJson) => {
   try {
     if (!message || !recipientPublicKeyJson) {
       throw new Error('Message ou clé publique manquant');
@@ -104,246 +88,102 @@ export const encryptMessage = async (message, recipientPublicKeyJson, senderPriv
     const crypto = window.crypto;
     const subtle = crypto.subtle;
     
-    // 1. Parsing de la clé publique du destinataire
-    const recipientPublicBundle = JSON.parse(recipientPublicKeyJson);
+    // 1. Parser la clé publique du destinataire
+    let recipientPublicBundle;
+    try {
+      recipientPublicBundle = JSON.parse(recipientPublicKeyJson);
+    } catch (error) {
+      console.error('Erreur de parsing de la clé publique:', error);
+      throw new Error('Format de clé publique invalide');
+    }
     
-    // 2. Vérification de la version de la clé - Extraire la clé du format utilisé par l'API
-    const keyData = recipientPublicBundle.key || recipientPublicBundle;
-    
-    // Adapter le parsing pour différents formats possibles
+    // 2. Extraction de la clé depuis le format utilisé par l'API
     let publicKeyBase64;
-    if (typeof keyData === 'string') {
-      // Déjà une chaîne Base64, l'utiliser directement
-      publicKeyBase64 = keyData;
-    } else if (keyData && typeof keyData === 'object') {
-      // Si c'est un objet avec une propriété key (nouveau format)
-      publicKeyBase64 = keyData.key;
+    if (recipientPublicBundle.key) {
+      publicKeyBase64 = recipientPublicBundle.key;
+    } else if (typeof recipientPublicBundle === 'string') {
+      publicKeyBase64 = recipientPublicBundle;
     } else {
       throw new Error('Format de clé publique non reconnu');
     }
     
-    // 3. Import de la clé SPKI (format standard)
+    // 3. Import de la clé publique au format SPKI
     const publicKeyBuffer = base64ToArrayBuffer(publicKeyBase64);
     
-    const recipientRsaPublicKey = await subtle.importKey(
-      'spki',
-      publicKeyBuffer,
-      {
-        name: 'RSA-OAEP',
-        hash: { name: 'SHA-256' } // Utiliser SHA-256 pour compatibilité maximale
-      },
-      false,
-      ['encrypt', 'wrapKey']
-    );
-    
-    // 4. Vérifier la présence de la clé ECDH ou utiliser un mode compatibilité
-    let recipientEcdhPublicKey = null;
-    if (recipientPublicBundle.ecdhPublicKey) {
-      recipientEcdhPublicKey = await subtle.importKey(
+    try {
+      const recipientPublicKey = await subtle.importKey(
         'spki',
-        base64ToArrayBuffer(recipientPublicBundle.ecdhPublicKey),
+        publicKeyBuffer,
         {
-          name: 'ECDH',
-          namedCurve: ECC_CURVE_ECDH
+          name: 'RSA-OAEP',
+          hash: { name: 'SHA-256' }
         },
         false,
-        []
+        ['encrypt']
       );
-    } else {
-      console.log('Mode de compatibilité activé: clé ECDH non disponible');
-      // Dans le mode compatibilité, nous allons utiliser uniquement RSA
-      // et générer une structure temporaire pour éviter les erreurs plus tard
-    }
-    
-    // 5. Génération d'une clé symétrique AES-GCM unique pour ce message
-    const messageKey = await subtle.generateKey(
-      {
-        name: 'AES-GCM',
-        length: AES_KEY_SIZE
-      },
-      true,
-      ['encrypt', 'decrypt']
-    );
-    
-    // 6. Variables pour la gestion des clés
-    let ephemeralEcdhKey = null;
-    let sharedKey = null; 
-    
-    // Mode avec Perfect Forward Secrecy si ECDH est disponible
-    if (recipientEcdhPublicKey) {
-      // Génération d'une paire ECDH éphémère pour ce message
-      ephemeralEcdhKey = await subtle.generateKey(
+      
+      // 4. Génération d'une clé AES-GCM unique pour ce message
+      const aesKey = await subtle.generateKey(
         {
-          name: 'ECDH',
-          namedCurve: ECC_CURVE_ECDH
+          name: 'AES-GCM',
+          length: 256
         },
         true,
-        ['deriveKey', 'deriveBits']
-      );
-      
-      // Dérivation d'une clé partagée avec la clé ECDH du destinataire
-      const sharedSecretBits = await subtle.deriveBits(
-        {
-          name: 'ECDH',
-          public: recipientEcdhPublicKey
-        },
-        ephemeralEcdhKey.privateKey,
-        512 // 512 bits
-      );
-      
-      // Conversion des bits partagés en clé AES
-      sharedKey = await subtle.importKey(
-        'raw',
-        sharedSecretBits,
-        {
-          name: 'AES-GCM',
-          length: AES_KEY_SIZE
-        },
-        false,
         ['encrypt', 'decrypt']
       );
-    }
-    
-    // 9. Génération d'un vecteur d'initialisation (nonce) aléatoire
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    
-    // 10. Ajout d'un timestamp et d'un nonce unique pour protéger contre les attaques par rejeu
-    const timestamp = Date.now();
-    const messageId = generateRandomId();
-    const authenticatedData = new TextEncoder().encode(`murmur-auth-v3:${messageId}:${timestamp}`);
-    
-    // 11. Chiffrement du message avec la clé AES-GCM unique
-    const messageBytes = new TextEncoder().encode(message);
-    const encryptedMessageBuffer = await subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv,
-        additionalData: authenticatedData,
-        tagLength: AUTH_TAG_SIZE
-      },
-      messageKey,
-      messageBytes
-    );
-    
-    // 12. Signature du message si une clé privée d'expéditeur est fournie
-    let signature = null;
-    let signerKeyId = null;
-    
-    if (senderPrivateKeyJson) {
-      const senderPrivateBundle = JSON.parse(senderPrivateKeyJson);
-      signerKeyId = senderPrivateBundle.keyId;
       
-      // Import de la clé de signature
-      const signPrivateKey = await subtle.importKey(
-        'pkcs8',
-        base64ToArrayBuffer(senderPrivateBundle.signPrivateKey),
-        {
-          name: 'ECDSA',
-          namedCurve: ECC_CURVE_SIGN
-        },
-        false,
-        ['sign']
-      );
+      // 5. Génération d'un vecteur d'initialisation (IV) aléatoire
+      const iv = crypto.getRandomValues(new Uint8Array(12));
       
-      // Création de la signature du message original + messageId + timestamp
-      const signatureData = new Uint8Array([
-        ...messageBytes,
-        ...new TextEncoder().encode(messageId + timestamp)
-      ]);
+      // 6. Ajout de données d'authentification supplémentaires
+      const messageId = generateRandomId();
+      const timestamp = Date.now();
+      const authenticatedData = new TextEncoder().encode(`murmur-auth:${messageId}:${timestamp}`);
       
-      const signatureBuffer = await subtle.sign(
-        {
-          name: 'ECDSA',
-          hash: { name: HASH_ALGORITHM }
-        },
-        signPrivateKey,
-        signatureData
-      );
-      
-      signature = arrayBufferToBase64(signatureBuffer);
-    }
-    
-    // 13. Exportation de la clé AES-GCM du message
-    const rawMessageKey = await subtle.exportKey('raw', messageKey);
-    
-    // 14. Exportation de la clé publique ECDH éphémère (si disponible)
-    let ephemeralPublicKey = null;
-    if (ephemeralEcdhKey) {
-      ephemeralPublicKey = await subtle.exportKey('spki', ephemeralEcdhKey.publicKey);
-    }
-    
-    // 15-17. Chiffrement de la clé de message en fonction du mode disponible
-    let encryptedKeyWithRsa;
-    let keyEncryptionIv;
-    
-    if (sharedKey) {
-      // Mode Double chiffrement (ECDH + RSA) pour Perfect Forward Secrecy
-      keyEncryptionIv = crypto.getRandomValues(new Uint8Array(12));
-      
-      // Double chiffrement: Clé du message chiffrée avec la clé partagée ECDH
-      const encryptedKeyWithEcdh = await subtle.encrypt(
+      // 7. Chiffrement du message avec AES-GCM
+      const messageBytes = new TextEncoder().encode(message);
+      const encryptedMessageBuffer = await subtle.encrypt(
         {
           name: 'AES-GCM',
-          iv: keyEncryptionIv,
-          additionalData: new TextEncoder().encode(`key-wrapping-v3:${messageId}`),
-          tagLength: AUTH_TAG_SIZE
+          iv,
+          additionalData: authenticatedData,
+          tagLength: 128 // 128 bits pour le tag d'authentification
         },
-        sharedKey,
-        rawMessageKey
+        aesKey,
+        messageBytes
       );
       
-      // Chiffrement avec RSA de la clé déjà protégée par ECDH (protection multicouche)
-      encryptedKeyWithRsa = await subtle.encrypt(
-        {
-          name: 'RSA-OAEP'
-        },
-        recipientRsaPublicKey,
-        encryptedKeyWithEcdh
-      );
-    } else {
-      // Mode compatibilité: Chiffrement direct avec RSA
-      keyEncryptionIv = new Uint8Array(12); // IV vide pour compatibilité
+      // 8. Export de la clé AES-GCM
+      const rawAesKey = await subtle.exportKey('raw', aesKey);
       
-      // Chiffrement direct avec RSA
-      encryptedKeyWithRsa = await subtle.encrypt(
-        {
-          name: 'RSA-OAEP'
-        },
-        recipientRsaPublicKey,
-        rawMessageKey
+      // 9. Chiffrement de la clé AES avec RSA-OAEP
+      const encryptedKeyBuffer = await subtle.encrypt(
+        { name: 'RSA-OAEP' },
+        recipientPublicKey,
+        rawAesKey
       );
+      
+      // 10. Construction des métadonnées de chiffrement
+      const metadata = {
+        schema: 'murmur-e2ee-v1',
+        messageId,
+        timestamp,
+        algorithm: 'RSA-OAEP-2048+AES-GCM-256',
+        iv: arrayBufferToBase64(iv),
+        authTagLength: 128,
+        version: '1.0'
+      };
+      
+      // 11. Retour des données chiffrées
+      return {
+        encryptedMessage: arrayBufferToBase64(encryptedMessageBuffer),
+        encryptedKey: arrayBufferToBase64(encryptedKeyBuffer),
+        metadata: JSON.stringify(metadata)
+      };
+    } catch (error) {
+      console.error('Erreur lors du chiffrement:', error);
+      throw new Error('Échec du chiffrement du message: ' + error.message);
     }
-    
-    // 18. Ajout d'informations de sécurité pour le déchiffrement
-    const encryptionMetadata = {
-      schema: 'murmur-e2ee-v3',
-      messageId,
-      timestamp,
-      algorithm: ephemeralPublicKey ? 'RSA-OAEP-4096+ECDH-P521+AES-GCM-256' : 'RSA-OAEP-2048+AES-GCM-256',
-      iv: arrayBufferToBase64(iv),
-      authTagSize: AUTH_TAG_SIZE,
-      signerKeyId,
-      version: '3.0',
-      compatMode: ephemeralPublicKey ? 'false' : 'true'
-    };
-    
-    // Ajouter les propriétés conditionnelles
-    if (ephemeralPublicKey) {
-      encryptionMetadata.ephemeralPublicKey = arrayBufferToBase64(ephemeralPublicKey);
-      encryptionMetadata.keyEncryptionIv = arrayBufferToBase64(keyEncryptionIv);
-      encryptionMetadata.recipientKeyId = recipientPublicBundle.keyId;
-    } else {
-      // Mode compatibilité: informations minimales nécessaires
-      encryptionMetadata.keyEncryptionIv = arrayBufferToBase64(keyEncryptionIv);
-    }
-    
-    // 19. Construction du paquet chiffré final
-    return {
-      encryptedMessage: arrayBufferToBase64(encryptedMessageBuffer),
-      encryptedKey: arrayBufferToBase64(encryptedKeyWithRsa),
-      metadata: JSON.stringify(encryptionMetadata),
-      signature
-    };
   } catch (error) {
     console.error('Erreur lors du chiffrement du message:', error);
     throw new Error('Échec du chiffrement du message: ' + error.message);
@@ -351,21 +191,20 @@ export const encryptMessage = async (message, recipientPublicKeyJson, senderPriv
 };
 
 /**
- * Déchiffre un message avec vérification d'intégrité
+ * Déchiffre un message chiffré
  * @param {string} encryptedMessageBase64 - Message chiffré en Base64
  * @param {string} encryptedKeyBase64 - Clé chiffrée en Base64
- * @param {string} metadataJson - Métadonnées de chiffrement en JSON
- * @param {string} privateKeyJson - Clé privée de l'utilisateur en JSON
- * @param {string} senderPublicKeyJson - Clé publique de l'expéditeur pour vérifier signature (facultatif)
+ * @param {string} privateKeyJson - Clé privée du destinataire (JSON)
+ * @param {string} metadataJson - Métadonnées de chiffrement (JSON)
  * @returns {Promise<string>} - Message déchiffré
  */
 export const decryptMessage = async (
-  encryptedMessageBase64, 
-  encryptedKeyBase64, 
-  metadataJson, 
+  encryptedMessageBase64,
+  encryptedKeyBase64,
   privateKeyJson,
   senderPublicKeyJson = null,
-  signature = null
+  signature = null,
+  metadataJson = '{}'
 ) => {
   try {
     if (!privateKeyJson) {
@@ -375,550 +214,102 @@ export const decryptMessage = async (
     const crypto = window.crypto;
     const subtle = crypto.subtle;
     
-    // 1. Parsing des données
-    const privateKeyBundle = JSON.parse(privateKeyJson);
-    const metadata = JSON.parse(metadataJson);
-    
-    // 2. Vérification de la version et du schéma
-    if (!metadata.schema || !metadata.schema.startsWith('murmur-e2ee-')) {
-      throw new Error('Format de message non reconnu');
+    // 1. Parser les données
+    let privateKeyBundle;
+    try {
+      privateKeyBundle = JSON.parse(privateKeyJson);
+    } catch (error) {
+      console.error('Erreur de parsing de la clé privée:', error);
+      throw new Error('Format de clé privée invalide');
     }
     
-    // Vérifier le mode de compatibilité
-    const useCompatMode = metadata.compatMode === 'true' || !metadata.ephemeralPublicKey;
-    console.log('Mode de déchiffrement:', useCompatMode ? 'compatibilité' : 'standard');
-    
-    // 3. Vérification que le message est destiné à cette clé (si applicable)
-    if (!useCompatMode && metadata.recipientKeyId && metadata.recipientKeyId !== privateKeyBundle.keyId) {
-      throw new Error('Ce message n\'est pas destiné à cette clé');
+    let metadata;
+    try {
+      metadata = JSON.parse(metadataJson || '{}');
+    } catch (error) {
+      console.error('Erreur de parsing des métadonnées:', error);
+      metadata = {}; // Utiliser un objet vide par défaut
     }
     
-    // 4. Import de la clé RSA privée pour déchiffrer - obtenir la clé privée du format approprié
-    let rsaPrivateKeyData;
-    
-    // Vérifier le format de la clé privée
-    if (privateKeyBundle.rsaPrivateKey) {
-      rsaPrivateKeyData = privateKeyBundle.rsaPrivateKey;
-    } else if (privateKeyBundle.privateKey) {
-      rsaPrivateKeyData = privateKeyBundle.privateKey;
+    // 2. Extraction de la clé privée
+    let privateKeyData;
+    if (privateKeyBundle.privateKey) {
+      privateKeyData = privateKeyBundle.privateKey;
+    } else if (typeof privateKeyBundle === 'object' && privateKeyBundle.key) {
+      privateKeyData = privateKeyBundle.key;
     } else {
-      // Tenter le décodage du format simplifié
-      try {
-        const keyData = JSON.parse(privateKeyBundle.privateKey || privateKeyBundle);
-        rsaPrivateKeyData = keyData;
-      } catch (e) {
-        rsaPrivateKeyData = privateKeyBundle;
-      }
+      privateKeyData = privateKeyBundle; // Essai direct
     }
     
-    // Importer la clé RSA privée
-    const privateKey = await subtle.importKey(
-      'pkcs8',
-      base64ToArrayBuffer(rsaPrivateKeyData),
-      {
-        name: 'RSA-OAEP',
-        hash: { name: 'SHA-256' } // Pour compatibilité
-      },
-      false,
-      ['decrypt', 'unwrapKey']
-    );
+    // 3. Import de la clé privée RSA
+    const privateKeyBuffer = base64ToArrayBuffer(privateKeyData);
     
-    // 5-6. Import des clés ECDH si disponibles (mode non compatible)
-    let ecdhPrivateKey = null;
-    let ephemeralPublicKey = null;
-    
-    if (!useCompatMode && privateKeyBundle.ecdhPrivateKey && metadata.ephemeralPublicKey) {
-      try {
-        // Import de la clé ECDH privée pour la Perfect Forward Secrecy
-        ecdhPrivateKey = await subtle.importKey(
-          'pkcs8',
-          base64ToArrayBuffer(privateKeyBundle.ecdhPrivateKey),
-          {
-            name: 'ECDH',
-            namedCurve: ECC_CURVE_ECDH
-          },
-          false,
-          ['deriveKey', 'deriveBits']
-        );
-        
-        // Import de la clé ECDH éphémère publique de l'expéditeur
-        ephemeralPublicKey = await subtle.importKey(
-          'spki',
-          base64ToArrayBuffer(metadata.ephemeralPublicKey),
-          {
-            name: 'ECDH',
-            namedCurve: ECC_CURVE_ECDH
-          },
-          false,
-          []
-        );
-      } catch (error) {
-        console.warn('Échec de l\'import des clés ECDH, passage en mode compatibilité', error);
-        useCompatMode = true;
-      }
-    }
-    
-    // 7-10. Déchiffrement de la clé selon le mode (standard ou compatibilité)
-    let messageKeyRaw;
-    
-    // Mode de déchiffrement standard (Double couche avec ECDH) 
-    if (!useCompatMode && ecdhPrivateKey && ephemeralPublicKey) {
-      try {
-        // Déchiffrement de la clé chiffrée avec RSA (première couche)
-        const encryptedKeyWithEcdh = await subtle.decrypt(
-          {
-            name: 'RSA-OAEP'
-          },
-          privateKey,
-          base64ToArrayBuffer(encryptedKeyBase64)
-        );
-        
-        // Dérivation de la clé partagée avec la clé ECDH éphémère (Perfect Forward Secrecy)
-        const sharedSecretBits = await subtle.deriveBits(
-          {
-            name: 'ECDH',
-            public: ephemeralPublicKey
-          },
-          ecdhPrivateKey,
-          512 // 512 bits
-        );
-        
-        // Conversion des bits partagés en clé AES
-        const sharedKey = await subtle.importKey(
-          'raw',
-          sharedSecretBits,
-          {
-            name: 'AES-GCM',
-            length: AES_KEY_SIZE
-          },
-          false,
-          ['encrypt', 'decrypt']
-        );
-        
-        // Déchiffrement de la clé du message avec la clé ECDH partagée (deuxième couche)
-        messageKeyRaw = await subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: base64ToArrayBuffer(metadata.keyEncryptionIv),
-            additionalData: new TextEncoder().encode(`key-wrapping-v3:${metadata.messageId}`),
-            tagLength: AUTH_TAG_SIZE
-          },
-          sharedKey,
-          encryptedKeyWithEcdh
-        );
-      } catch (error) {
-        console.warn('Échec du déchiffrement en mode standard, passage en mode compatibilité', error);
-        useCompatMode = true;
-      }
-    }
-    
-    // Mode compatibilité (déchiffrement direct avec RSA)
-    if (useCompatMode) {
-      try {
-        messageKeyRaw = await subtle.decrypt(
-          {
-            name: 'RSA-OAEP'
-          },
-          privateKey,
-          base64ToArrayBuffer(encryptedKeyBase64)
-        );
-      } catch (error) {
-        console.error('Échec du déchiffrement en mode compatibilité', error);
-        throw new Error('Impossible de déchiffrer la clé de message: ' + error.message);
-      }
-    }
-    
-    // 11. Import de la clé de message pour déchiffrer le contenu
-    const messageKey = await subtle.importKey(
-      'raw',
-      messageKeyRaw,
-      {
-        name: 'AES-GCM',
-        length: AES_KEY_SIZE
-      },
-      false,
-      ['decrypt']
-    );
-    
-    // 12. Préparation des données authentifiées
-    const authenticatedData = new TextEncoder().encode(
-      `murmur-auth-v3:${metadata.messageId}:${metadata.timestamp}`
-    );
-    
-    // 13. Déchiffrement du message avec la clé AES-GCM
-    const decryptedBuffer = await subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: base64ToArrayBuffer(metadata.iv),
-        additionalData: authenticatedData,
-        tagLength: AUTH_TAG_SIZE
-      },
-      messageKey,
-      base64ToArrayBuffer(encryptedMessageBase64)
-    );
-    
-    // 14. Conversion du buffer en texte
-    const decryptedMessage = new TextDecoder().decode(decryptedBuffer);
-    
-    // 15. Vérification de la signature si présente et si la clé publique est fournie
-    if (signature && senderPublicKeyJson && metadata.signerKeyId) {
-      const senderPublicBundle = JSON.parse(senderPublicKeyJson);
-      
-      // Vérifier que la clé publique correspond au signataire
-      if (senderPublicBundle.keyId !== metadata.signerKeyId) {
-        throw new Error('La clé publique fournie ne correspond pas à la clé du signataire');
-      }
-      
-      // Import de la clé de vérification
-      const verifyKey = await subtle.importKey(
-        'spki',
-        base64ToArrayBuffer(senderPublicBundle.signPublicKey),
+    try {
+      const privateKey = await subtle.importKey(
+        'pkcs8',
+        privateKeyBuffer,
         {
-          name: 'ECDSA',
-          namedCurve: ECC_CURVE_SIGN
+          name: 'RSA-OAEP',
+          hash: { name: 'SHA-256' }
         },
         false,
-        ['verify']
+        ['decrypt']
       );
       
-      // Reconstruction des données signées (message + messageId + timestamp)
-      const signatureData = new Uint8Array([
-        ...decryptedBuffer,
-        ...new TextEncoder().encode(metadata.messageId + metadata.timestamp)
-      ]);
+      // 4. Déchiffrement de la clé AES-GCM
+      const encryptedKeyBuffer = base64ToArrayBuffer(encryptedKeyBase64);
+      const aesKeyBuffer = await subtle.decrypt(
+        { name: 'RSA-OAEP' },
+        privateKey,
+        encryptedKeyBuffer
+      );
       
-      // Vérification de la signature
-      const isValid = await subtle.verify(
+      // 5. Import de la clé AES-GCM déchiffrée
+      const aesKey = await subtle.importKey(
+        'raw',
+        aesKeyBuffer,
         {
-          name: 'ECDSA',
-          hash: { name: HASH_ALGORITHM }
+          name: 'AES-GCM',
+          length: 256
         },
-        verifyKey,
-        base64ToArrayBuffer(signature),
-        signatureData
+        false,
+        ['decrypt']
       );
       
-      if (!isValid) {
-        throw new Error('Signature invalide. Ce message a peut-être été altéré.');
+      // 6. Préparer les données pour le déchiffrement
+      const iv = metadata.iv ? base64ToArrayBuffer(metadata.iv) : new Uint8Array(12);
+      const authTagLength = metadata.authTagLength || 128;
+      
+      // Créer des données authentifiées supplémentaires si présentes dans les métadonnées
+      let authenticatedData = new Uint8Array(0);
+      if (metadata.messageId && metadata.timestamp) {
+        authenticatedData = new TextEncoder().encode(`murmur-auth:${metadata.messageId}:${metadata.timestamp}`);
       }
+      
+      // 7. Déchiffrement du message
+      const encryptedMessageBuffer = base64ToArrayBuffer(encryptedMessageBase64);
+      const decryptedBuffer = await subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv,
+          additionalData: authenticatedData,
+          tagLength: authTagLength
+        },
+        aesKey,
+        encryptedMessageBuffer
+      );
+      
+      // 8. Conversion du buffer en texte
+      const decryptedMessage = new TextDecoder().decode(decryptedBuffer);
+      
+      return decryptedMessage;
+    } catch (error) {
+      console.error('Erreur lors du déchiffrement:', error);
+      throw new Error('Échec du déchiffrement: ' + error.message);
     }
-    
-    // 16. Protection contre les attaques par rejeu (rejeter les messages trop anciens)
-    const messageAge = Date.now() - metadata.timestamp;
-    const maxAcceptableAge = 365 * 24 * 60 * 60 * 1000; // 1 an par défaut
-    
-    if (messageAge > maxAcceptableAge) {
-      console.warn('Message potentiellement obsolète détecté!');
-      // On ne rejette pas automatiquement, mais on pourrait ajouter une logique ici
-    }
-    
-    return decryptedMessage;
   } catch (error) {
     console.error('Erreur lors du déchiffrement du message:', error);
     throw new Error('Échec du déchiffrement: ' + error.message);
-  }
-};
-
-/**
- * Signe un message avec la clé privée de l'utilisateur pour prouver l'authenticité
- * @param {string} message - Message à signer
- * @param {string} privateKeyJson - Clé privée au format JSON
- * @returns {Promise<string>} - Signature au format Base64
- */
-export const signMessage = async (message, privateKeyJson) => {
-  try {
-    const subtle = window.crypto.subtle;
-    const keyBundle = JSON.parse(privateKeyJson);
-    
-    // Import de la clé de signature
-    const signPrivateKey = await subtle.importKey(
-      'pkcs8',
-      base64ToArrayBuffer(keyBundle.signPrivateKey),
-      {
-        name: 'ECDSA',
-        namedCurve: ECC_CURVE_SIGN
-      },
-      false,
-      ['sign']
-    );
-    
-    // Génération d'un identifiant unique pour le message
-    const messageId = generateRandomId();
-    const timestamp = Date.now();
-    
-    // Création des données à signer (message + messageId + timestamp)
-    const messageBuffer = new TextEncoder().encode(message);
-    const signatureData = new Uint8Array([
-      ...messageBuffer,
-      ...new TextEncoder().encode(messageId + timestamp)
-    ]);
-    
-    // Création de la signature
-    const signatureBuffer = await subtle.sign(
-      {
-        name: 'ECDSA',
-        hash: { name: HASH_ALGORITHM }
-      },
-      signPrivateKey,
-      signatureData
-    );
-    
-    // Retourner la signature avec les métadonnées
-    return {
-      signature: arrayBufferToBase64(signatureBuffer),
-      messageId,
-      timestamp,
-      keyId: keyBundle.keyId
-    };
-  } catch (error) {
-    console.error('Erreur lors de la signature du message:', error);
-    throw new Error('Échec de la signature: ' + error.message);
-  }
-};
-
-/**
- * Vérifie la signature d'un message
- * @param {string} message - Message original
- * @param {Object} signatureData - Données de signature (signature, messageId, timestamp, keyId)
- * @param {string} publicKeyJson - Clé publique au format JSON
- * @returns {Promise<boolean>} - True si la signature est valide
- */
-export const verifySignature = async (message, signatureData, publicKeyJson) => {
-  try {
-    const subtle = window.crypto.subtle;
-    const publicKeyBundle = JSON.parse(publicKeyJson);
-    
-    // Vérifier que la clé publique correspond au signataire
-    if (publicKeyBundle.keyId !== signatureData.keyId) {
-      throw new Error('La clé publique fournie ne correspond pas à la clé du signataire');
-    }
-    
-    // Import de la clé de vérification
-    const signPublicKey = await subtle.importKey(
-      'spki',
-      base64ToArrayBuffer(publicKeyBundle.signPublicKey),
-      {
-        name: 'ECDSA',
-        namedCurve: ECC_CURVE_SIGN
-      },
-      false,
-      ['verify']
-    );
-    
-    // Reconstruction des données signées (message + messageId + timestamp)
-    const messageBuffer = new TextEncoder().encode(message);
-    const dataToVerify = new Uint8Array([
-      ...messageBuffer,
-      ...new TextEncoder().encode(signatureData.messageId + signatureData.timestamp)
-    ]);
-    
-    // Vérification de la signature
-    return await subtle.verify(
-      {
-        name: 'ECDSA',
-        hash: { name: HASH_ALGORITHM }
-      },
-      signPublicKey,
-      base64ToArrayBuffer(signatureData.signature),
-      dataToVerify
-    );
-  } catch (error) {
-    console.error('Erreur lors de la vérification de la signature:', error);
-    return false;
-  }
-};
-
-/**
- * Vérifie si une clé privée doit être renouvelée
- * @param {string} privateKeyJson - Clé privée au format JSON
- * @returns {boolean} - True si la clé doit être renouvelée
- */
-export const shouldRotateKeys = (privateKeyJson) => {
-  try {
-    const keyBundle = JSON.parse(privateKeyJson);
-    const now = Date.now();
-    
-    // La clé doit être renouvelée si elle approche de sa date d'expiration
-    if (keyBundle.keyRotationDue && keyBundle.keyRotationDue < (now + 7 * 24 * 60 * 60 * 1000)) {
-      return true;
-    }
-    
-    // La clé doit être renouvelée si elle utilise une version obsolète
-    if (!keyBundle.version || compareVersions(keyBundle.version, '2.0') < 0) {
-      return true;
-    }
-    
-    return false;
-  } catch (error) {
-    console.error('Erreur lors de la vérification de la rotation des clés:', error);
-    return true; // En cas de doute, renouveler les clés
-  }
-};
-
-/**
- * Génère une empreinte cryptographique de la clé publique pour vérification
- * @param {Object} publicKeyBundle - Bundle de clé publique
- * @returns {Promise<string>} - Empreinte au format Base64
- */
-const generateKeyFingerprint = async (publicKeyBundle) => {
-  try {
-    // Créer une chaîne normalisée des parties essentielles de la clé
-    const keyString = [
-      publicKeyBundle.keyId,
-      publicKeyBundle.rsaPublicKey,
-      publicKeyBundle.ecdhPublicKey,
-      publicKeyBundle.signPublicKey,
-      publicKeyBundle.timestamp,
-      publicKeyBundle.version
-    ].join(':');
-    
-    // Calculer l'empreinte SHA-256
-    const data = new TextEncoder().encode(keyString);
-    const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
-    
-    return arrayBufferToBase64(hashBuffer);
-  } catch (error) {
-    console.error('Erreur lors de la génération de l\'empreinte de la clé:', error);
-    throw error;
-  }
-};
-
-/**
- * Utilise PBKDF2 pour dériver une clé forte à partir d'un mot de passe
- * @param {string} password - Mot de passe
- * @param {Uint8Array|string} salt - Sel cryptographique ou sa représentation Base64
- * @returns {Promise<CryptoKey>} - Clé dérivée
- */
-export const deriveKeyFromPassword = async (password, salt) => {
-  try {
-    const subtle = window.crypto.subtle;
-    const passwordBuffer = new TextEncoder().encode(password);
-    
-    // Convertir le sel en Uint8Array si nécessaire
-    let saltBuffer;
-    if (typeof salt === 'string') {
-      saltBuffer = base64ToArrayBuffer(salt);
-    } else {
-      saltBuffer = salt;
-    }
-    
-    // Import de la clé basée sur le mot de passe
-    const baseKey = await subtle.importKey(
-      'raw',
-      passwordBuffer,
-      'PBKDF2',
-      false,
-      ['deriveKey']
-    );
-    
-    // Dérivation d'une clé AES-GCM à partir du mot de passe
-    const derivedKey = await subtle.deriveKey(
-      {
-        name: 'PBKDF2',
-        salt: saltBuffer,
-        iterations: PBKDF2_ITERATIONS,
-        hash: { name: HASH_ALGORITHM }
-      },
-      baseKey,
-      {
-        name: 'AES-GCM',
-        length: AES_KEY_SIZE
-      },
-      true,
-      ['encrypt', 'decrypt']
-    );
-    
-    return derivedKey;
-  } catch (error) {
-    console.error('Erreur lors de la dérivation de clé:', error);
-    throw new Error('Échec de la dérivation de clé: ' + error.message);
-  }
-};
-
-/**
- * Chiffre les clés privées avec un mot de passe pour un stockage sécurisé
- * @param {string} privateKeyJson - Clés privées au format JSON
- * @param {string} password - Mot de passe
- * @returns {Promise<string>} - Clés chiffrées au format JSON
- */
-export const encryptPrivateKeys = async (privateKeyJson, password) => {
-  try {
-    const crypto = window.crypto;
-    const subtle = crypto.subtle;
-    
-    // Générer un sel aléatoire
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    
-    // Dériver une clé à partir du mot de passe
-    const encryptionKey = await deriveKeyFromPassword(password, salt);
-    
-    // Générer un IV aléatoire
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    
-    // Chiffrer les clés privées
-    const data = new TextEncoder().encode(privateKeyJson);
-    const encryptedData = await subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv,
-        tagLength: 128
-      },
-      encryptionKey,
-      data
-    );
-    
-    // Créer un objet avec les clés chiffrées et les métadonnées
-    const encryptedBundle = {
-      encryptedKeys: arrayBufferToBase64(encryptedData),
-      salt: arrayBufferToBase64(salt),
-      iv: arrayBufferToBase64(iv),
-      algorithm: 'PBKDF2-AES-GCM',
-      iterations: PBKDF2_ITERATIONS,
-      version: '3.0'
-    };
-    
-    return JSON.stringify(encryptedBundle);
-  } catch (error) {
-    console.error('Erreur lors du chiffrement des clés privées:', error);
-    throw new Error('Échec du chiffrement des clés privées');
-  }
-};
-
-/**
- * Déchiffre les clés privées protégées par mot de passe
- * @param {string} encryptedKeysJson - Clés chiffrées au format JSON
- * @param {string} password - Mot de passe
- * @returns {Promise<string>} - Clés privées au format JSON
- */
-export const decryptPrivateKeys = async (encryptedKeysJson, password) => {
-  try {
-    const subtle = window.crypto.subtle;
-    
-    // Parser les données chiffrées
-    const encryptedBundle = JSON.parse(encryptedKeysJson);
-    
-    // Dériver la clé à partir du mot de passe
-    const decryptionKey = await deriveKeyFromPassword(
-      password,
-      encryptedBundle.salt
-    );
-    
-    // Déchiffrer les clés privées
-    const decryptedData = await subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: base64ToArrayBuffer(encryptedBundle.iv),
-        tagLength: 128
-      },
-      decryptionKey,
-      base64ToArrayBuffer(encryptedBundle.encryptedKeys)
-    );
-    
-    // Convertir en chaîne de caractères
-    return new TextDecoder().decode(decryptedData);
-  } catch (error) {
-    console.error('Erreur lors du déchiffrement des clés privées:', error);
-    throw new Error('Mot de passe incorrect ou données corrompues');
   }
 };
 
@@ -933,27 +324,6 @@ function generateRandomId() {
   window.crypto.getRandomValues(array);
   
   return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * Compare deux versions sémantiques
- * @param {string} v1 - Première version
- * @param {string} v2 - Seconde version
- * @returns {number} - -1 si v1 < v2, 0 si v1 = v2, 1 si v1 > v2
- */
-function compareVersions(v1, v2) {
-  const parts1 = v1.split('.').map(Number);
-  const parts2 = v2.split('.').map(Number);
-  
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const part1 = parts1[i] || 0;
-    const part2 = parts2[i] || 0;
-    
-    if (part1 < part2) return -1;
-    if (part1 > part2) return 1;
-  }
-  
-  return 0;
 }
 
 /**
@@ -976,10 +346,15 @@ function arrayBufferToBase64(buffer) {
  * @returns {ArrayBuffer} - ArrayBuffer correspondant
  */
 function base64ToArrayBuffer(base64) {
-  const binaryString = window.atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+  try {
+    const binaryString = window.atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    console.error('Erreur de conversion Base64:', error);
+    throw new Error('Erreur de conversion Base64: ' + error.message);
   }
-  return bytes.buffer;
 }

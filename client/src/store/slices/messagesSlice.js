@@ -5,37 +5,54 @@ import socketService from '../../services/socket';
 import { encryptMessage, decryptMessage } from '../../services/encryption';
 import { storeOfflineMessage, syncOfflineMessages } from '../../utils/offlineSync';
 
+// Fonction utilitaire pour normaliser les ID de conversation
+const normalizeConversationId = (id) => {
+  if (!id) return id;
+  
+  // Si c'est un ID de groupe, le laisser tel quel
+  if (id.startsWith('group:')) return id;
+  
+  // Si c'est un ID direct, trier les parties
+  if (id.includes(':')) {
+    const parts = id.split(':').filter(Boolean);
+    if (parts.length === 2) {
+      return parts.sort().join(':');
+    }
+  }
+  
+  // Format inconnu, retourner tel quel
+  return id;
+};
+
 // Async thunks
 export const fetchConversationMessages = createAsyncThunk(
   'messages/fetchMessages',
   async (conversationId, { rejectWithValue, getState }) => {
     try {
-      console.log(`Fetching messages for conversation: ${conversationId}`);
-      
-      // Vérifier si on a déjà des messages pour cette conversation
-      const existingMessages = getState().messages.conversations[conversationId] || [];
-      
-      // Normaliser l'ID de conversation pour s'assurer qu'il est bien formaté
-      let normalizedId = conversationId;
-      
-      // Si c'est un ID direct (format userId:userId), trier les IDs
-      if (!conversationId.startsWith('group:') && conversationId.includes(':')) {
-        const parts = conversationId.split(':');
-        if (parts.length === 2) {
-          normalizedId = parts.sort().join(':');
-        }
+      if (!conversationId) {
+        return rejectWithValue('ID de conversation manquant');
       }
       
+      console.log(`Fetching messages for conversation: ${conversationId}`);
+      
+      // Normaliser l'ID de conversation
+      const normalizedId = normalizeConversationId(conversationId);
+      
+      // Vérifier si on a déjà des messages pour cette conversation
+      const existingMessages = getState().messages.conversations[normalizedId] || [];
+      
       try {
-        const response = await api.get(`/messages/${normalizedId}`, {
-          headers: {
-            Authorization: `Bearer ${getState().auth.token}`,
-          },
-        });
+        const response = await api.get(`/messages/${normalizedId}`);
+        
+        // Vérifier la structure de la réponse
+        if (!response.data || !response.data.success) {
+          throw new Error('Format de réponse API invalide');
+        }
         
         const messages = response.data.data || [];
         console.log(`Received ${messages.length} messages from API for conversation: ${normalizedId}`);
         
+        // État courant et clés de déchiffrement
         const currentUser = getState().auth.user;
         const privateKey = getState().auth.privateKey;
         
@@ -43,47 +60,56 @@ export const fetchConversationMessages = createAsyncThunk(
           console.warn('Private key not available for decryption');
         }
         
-        // Decrypt messages avec gestion d'erreur robuste
+        // Déchiffrer les messages avec gestion d'erreur robuste
         const decryptedMessages = await Promise.all(
           messages.map(async (message) => {
+            // Validation de base
             if (!message) {
               console.warn('Received null or undefined message');
               return null;
             }
             
-            if (message.senderId === currentUser.id) {
-              // Sender (current user) doesn't need to decrypt
-              return message;
+            // Si l'utilisateur est l'expéditeur, pas besoin de déchiffrer
+            if (message.senderId === currentUser?.id) {
+              return {
+                ...message,
+                conversationId: normalizedId, // Normaliser l'ID de conversation
+              };
             }
             
             try {
+              // Déchiffrer uniquement si on a les clés nécessaires
               if (!message.encryptedKey || !privateKey) {
                 return {
                   ...message,
-                  message: '[Encrypted message - Cannot decrypt]',
+                  message: '[Message chiffré - Impossible de déchiffrer]',
+                  conversationId: normalizedId,
                 };
               }
               
-              const metadata = message.metadata || '{}'; // Valeur par défaut
+              // Déchiffrement avec gestion des erreurs
+              const metadata = message.metadata || '{}';
               
               const decrypted = await decryptMessage(
                 message.message,
                 message.encryptedKey,
                 privateKey,
-                null,  // senderPublicKeyJson
-                null,  // signature
+                null,
+                null,
                 metadata
               );
               
               return {
                 ...message,
                 message: decrypted,
+                conversationId: normalizedId,
               };
             } catch (error) {
               console.error('Failed to decrypt message:', error, message);
               return {
                 ...message,
-                message: '[Encrypted message - Decryption failed]',
+                message: '[Message chiffré - Échec du déchiffrement]',
+                conversationId: normalizedId,
               };
             }
           })
@@ -95,7 +121,7 @@ export const fetchConversationMessages = createAsyncThunk(
         console.log(`Successfully processed ${validMessages.length} messages for conversation: ${normalizedId}`);
         
         return {
-          conversationId,
+          conversationId: normalizedId,
           messages: validMessages,
         };
       } catch (error) {
@@ -103,50 +129,81 @@ export const fetchConversationMessages = createAsyncThunk(
         if (error.response?.status === 429 && existingMessages.length > 0) {
           console.warn('Rate limited while fetching messages, using existing data');
           return {
-            conversationId,
+            conversationId: normalizedId,
             messages: existingMessages,
           };
         }
         
-        // En cas d'erreur 403 (accès refusé), gérer spécifiquement cette erreur
+        // En cas d'erreur 403 (accès refusé), gérer spécifiquement
         if (error.response?.status === 403) {
           console.error(`Unauthorized access to conversation: ${normalizedId}`);
-          return rejectWithValue('Unauthorized access to conversation');
+          return rejectWithValue('Accès non autorisé à cette conversation');
+        }
+        
+        // Erreur réseau
+        if (error.message === 'Network Error' && existingMessages.length > 0) {
+          console.warn('Network error while fetching messages, using existing data');
+          return {
+            conversationId: normalizedId,
+            messages: existingMessages,
+          };
         }
         
         throw error;
       }
     } catch (error) {
       console.error('Error fetching messages:', error);
-      return rejectWithValue(error.response?.data?.message || 'Failed to fetch messages');
+      return rejectWithValue(
+        error.response?.data?.message || 
+        error.message || 
+        'Échec du chargement des messages'
+      );
     }
   }
 );
 
 export const sendMessage = createAsyncThunk(
   'messages/sendMessage',
-  async ({ recipientId, groupId, message }, { rejectWithValue, getState }) => {
+  async ({ recipientId, groupId, message, conversationId }, { rejectWithValue, getState }) => {
     try {
-      console.log('Sending message:', { recipientId, groupId, message });
+      // Validation des paramètres
+      if (!message || (!recipientId && !groupId)) {
+        return rejectWithValue('Paramètres de message invalides');
+      }
+      
+      console.log('Sending message:', { 
+        recipientId, 
+        groupId, 
+        messageLength: message?.length,
+        conversationId
+      });
       
       const currentUser = getState().auth.user;
       const contacts = getState().contacts.contacts;
+      
+      if (!currentUser || !currentUser.id) {
+        return rejectWithValue('Utilisateur non authentifié');
+      }
+      
+      // Normaliser l'ID de conversation
+      const normalizedId = normalizeConversationId(conversationId);
       let encryptedData;
       
+      // Message direct
       if (recipientId) {
-        // Direct message - Find recipient's public key
+        // Trouver la clé publique du destinataire
         const recipient = contacts.find(
           (contact) => contact.id === recipientId
         );
         
         if (!recipient) {
           console.error('Recipient not found in contacts:', recipientId);
-          return rejectWithValue('Recipient not found in contacts');
+          return rejectWithValue('Destinataire introuvable dans vos contacts');
         }
         
         if (!recipient.publicKey) {
           console.error('Recipient public key not available:', recipient);
-          return rejectWithValue('Recipient public key not available - You must be connected contacts to exchange messages');
+          return rejectWithValue('Clé publique du destinataire non disponible - Vous devez être contacts connectés pour échanger des messages');
         }
         
         console.log('Encrypting message for recipient:', recipient.username);
@@ -155,7 +212,7 @@ export const sendMessage = createAsyncThunk(
           console.log('Message encrypted successfully');
         } catch (err) {
           console.error('Encryption error:', err);
-          return rejectWithValue('Failed to encrypt message: ' + err.message);
+          return rejectWithValue('Échec du chiffrement du message: ' + err.message);
         }
         
         const messagePayload = {
@@ -165,56 +222,63 @@ export const sendMessage = createAsyncThunk(
           metadata: encryptedData.metadata
         };
         
-        console.log('Message payload prepared:', { recipientId, encryptionSuccess: !!encryptedData });
+        console.log('Message payload prepared for direct message');
         
-        // Try to send via socket first
+        // Essayer d'envoyer via socket d'abord
         if (socketService.isConnected()) {
           console.log('Socket connected, sending message via socket');
           socketService.sendPrivateMessage(messagePayload);
         } else {
           console.log('Socket not connected, saving for offline sync');
-          // Fall back to HTTP API
-          // Store for sync when back online
+          // Sauvegarder pour synchronisation quand connexion rétablie
           await storeOfflineMessage(messagePayload);
           
-          // Try to sync immediately
+          // Essayer de synchroniser immédiatement
           syncOfflineMessages();
         }
         
-        // Return message object to store in redux
-        const msgId = Date.now().toString();
-        console.log('Storing message in redux with ID:', msgId);
+        // Créer un ID de message unique
+        const msgId = Date.now().toString() + Math.floor(Math.random() * 1000);
+        console.log('Generated message ID:', msgId);
         
+        // Retourner le message pour mise à jour dans le store Redux
         return {
           id: msgId,
           senderId: currentUser.id,
           senderUsername: currentUser.username,
           recipientId,
-          message, // Store original message for display
+          message, // Message original pour affichage
           timestamp: Date.now(),
-          conversationId: [currentUser.id, recipientId].sort().join(':'),
+          conversationId: normalizedId,
           status: socketService.isConnected() ? 'sent' : 'pending',
         };
-      } else if (groupId) {
+      } 
+      // Message de groupe
+      else if (groupId) {
         console.log('Sending group message to group:', groupId);
-        // Group message
+        // Trouver le groupe
         const group = getState().groups.groups.find((g) => g.id === groupId);
         
         if (!group) {
           console.error('Group not found:', groupId);
-          return rejectWithValue('Group not found');
+          return rejectWithValue('Groupe introuvable');
         }
         
-        console.log('Group found:', group.name, 'with members:', group.members);
+        console.log('Group found:', group.name, 'with members:', group.members?.length || 0);
         
-        // Encrypt message for each group member
+        // Chiffrer le message pour chaque membre du groupe
         const encryptedKeys = {};
         let anyKeysFound = false;
         
+        if (!group.members || !Array.isArray(group.members) || group.members.length === 0) {
+          return rejectWithValue('Aucun membre dans ce groupe');
+        }
+        
+        // Parcourir tous les membres pour chiffrer le message pour chacun
         for (const memberId of group.members) {
           if (memberId === currentUser.id) {
             console.log('Skipping self for encryption:', memberId);
-            continue; // Skip self
+            continue; // Ignorer soi-même
           }
           
           const member = contacts.find(
@@ -230,7 +294,7 @@ export const sendMessage = createAsyncThunk(
               console.log('Successfully encrypted for member:', member.username);
             } catch (err) {
               console.error(`Failed to encrypt for member ${memberId}:`, err);
-              // Continue with other members
+              // Continuer avec les autres membres
             }
           } else {
             console.log('Member missing or has no public key:', memberId);
@@ -239,16 +303,16 @@ export const sendMessage = createAsyncThunk(
         
         if (!anyKeysFound) {
           console.error('No valid recipients with public keys in the group');
-          return rejectWithValue('No valid recipients with public keys - You must be connected with at least one member');
+          return rejectWithValue('Aucun destinataire valide avec clés publiques - Vous devez être connecté avec au moins un membre');
         }
         
-        console.log('Successfully encrypted for', Object.keys(encryptedKeys).length, 'members');
+        console.log(`Successfully encrypted for ${Object.keys(encryptedKeys).length} members`);
         
-        // We'll use the same encrypted message for all recipients to save bandwidth
+        // Utiliser le même message chiffré pour tous les destinataires (économie de bande passante)
         const firstContact = contacts.find(c => c.publicKey);
         if (!firstContact) {
           console.error('No contact with public key found for base encryption');
-          return rejectWithValue('Cannot find a valid public key for encryption');
+          return rejectWithValue('Impossible de trouver une clé publique valide pour le chiffrement');
         }
         
         encryptedData = await encryptMessage(message, firstContact.publicKey);
@@ -262,38 +326,39 @@ export const sendMessage = createAsyncThunk(
         
         console.log('Group message payload prepared');
         
-        // Try to send via socket first
+        // Essayer d'envoyer via socket d'abord
         if (socketService.isConnected()) {
           console.log('Socket connected, sending group message via socket');
           socketService.sendGroupMessage(groupMessagePayload);
         } else {
           console.log('Socket not connected, saving group message for offline sync');
-          // Fall back to HTTP API
-          // Store for sync when back online
+          // Sauvegarder pour synchronisation quand connexion rétablie
           await storeOfflineMessage(groupMessagePayload);
           
-          // Try to sync immediately
+          // Essayer de synchroniser immédiatement
           syncOfflineMessages();
         }
         
-        // Return message object to store in redux
-        const msgId = Date.now().toString();
-        console.log('Storing group message in redux with ID:', msgId);
+        // Créer un ID de message unique
+        const msgId = Date.now().toString() + Math.floor(Math.random() * 1000);
         
+        // Retourner le message pour mise à jour dans le store Redux
         return {
           id: msgId,
           senderId: currentUser.id,
           senderUsername: currentUser.username,
           groupId,
-          message, // Store original message for display
+          message, // Message original pour affichage
           timestamp: Date.now(),
           conversationId: `group:${groupId}`,
           status: socketService.isConnected() ? 'sent' : 'pending',
         };
       }
+      
+      return rejectWithValue('Configuration de message invalide');
     } catch (error) {
       console.error('Send message error:', error);
-      return rejectWithValue(error.message || 'Failed to send message');
+      return rejectWithValue(error.message || 'Échec de l\'envoi du message');
     }
   }
 );
@@ -314,13 +379,20 @@ const messagesSlice = createSlice({
     },
     addMessage: (state, action) => {
       const { message } = action.payload;
-      const conversationId = message.conversationId;
+      if (!message || !message.conversationId) {
+        console.error('Invalid message object:', message);
+        return;
+      }
       
+      // Normaliser l'ID de conversation
+      const conversationId = normalizeConversationId(message.conversationId);
+      
+      // Initialiser la conversation si elle n'existe pas encore
       if (!state.conversations[conversationId]) {
         state.conversations[conversationId] = [];
       }
       
-      // Check if message already exists
+      // Vérifier si le message existe déjà pour éviter les doublons
       const messageExists = state.conversations[conversationId].some(
         (msg) => msg.id === message.id
       );
@@ -328,26 +400,53 @@ const messagesSlice = createSlice({
       if (!messageExists) {
         state.conversations[conversationId].push(message);
         
-        // Sort by timestamp
-        state.conversations[conversationId].sort((a, b) => a.timestamp - b.timestamp);
+        // Trier les messages par timestamp
+        state.conversations[conversationId].sort((a, b) => {
+          const timestampA = a.timestamp || 0;
+          const timestampB = b.timestamp || 0;
+          return timestampA - timestampB;
+        });
       }
     },
     updateMessageStatus: (state, action) => {
       const { messageId, conversationId, status } = action.payload;
+      if (!messageId || !conversationId || !status) {
+        return;
+      }
       
-      if (state.conversations[conversationId]) {
-        const messageIndex = state.conversations[conversationId].findIndex(
+      // Normaliser l'ID de conversation
+      const normalizedId = normalizeConversationId(conversationId);
+      
+      if (state.conversations[normalizedId]) {
+        const messageIndex = state.conversations[normalizedId].findIndex(
           (msg) => msg.id === messageId
         );
         
         if (messageIndex !== -1) {
-          state.conversations[conversationId][messageIndex].status = status;
+          state.conversations[normalizedId][messageIndex].status = status;
         }
       }
     },
     clearMessageError: (state) => {
       state.error = null;
     },
+    markConversationAsRead: (state, action) => {
+      const conversationId = normalizeConversationId(action.payload);
+      
+      if (state.conversations[conversationId]) {
+        state.conversations[conversationId].forEach(message => {
+          if (!message.isRead && message.senderId !== action.payload.userId) {
+            message.isRead = true;
+          }
+        });
+      }
+    },
+    // Récupère les conversations locales quand l'application démarre
+    hydrateConversations: (state, action) => {
+      if (action.payload && typeof action.payload === 'object') {
+        state.conversations = action.payload;
+      }
+    }
   },
   extraReducers: (builder) => {
     builder
@@ -358,19 +457,55 @@ const messagesSlice = createSlice({
       })
       .addCase(fetchConversationMessages.fulfilled, (state, action) => {
         state.loading = false;
-        // Assurez-vous que action.payload contient les données attendues
+        
+        // Vérification de la validité de la payload
         if (action.payload && action.payload.conversationId && Array.isArray(action.payload.messages)) {
-          state.conversations[action.payload.conversationId] = action.payload.messages;
-          console.log(`Updated messages for conversation ${action.payload.conversationId}, count: ${action.payload.messages.length}`);
+          // Normaliser l'ID de conversation
+          const conversationId = normalizeConversationId(action.payload.conversationId);
+          
+          // Fusionner les messages existants et nouveaux
+          const existingMessages = state.conversations[conversationId] || [];
+          const newMessages = action.payload.messages;
+          
+          // Créer un Map pour éliminer les doublons efficacement
+          const messageMap = new Map();
+          
+          // Ajouter les messages existants au Map
+          existingMessages.forEach(msg => {
+            if (msg && msg.id) {
+              messageMap.set(msg.id, msg);
+            }
+          });
+          
+          // Ajouter ou remplacer par les nouveaux messages
+          newMessages.forEach(msg => {
+            if (msg && msg.id) {
+              messageMap.set(msg.id, msg);
+            }
+          });
+          
+          // Convertir le Map en array et trier par timestamp
+          const mergedMessages = Array.from(messageMap.values())
+            .sort((a, b) => {
+              const timestampA = a.timestamp || 0;
+              const timestampB = b.timestamp || 0;
+              return timestampA - timestampB;
+            });
+          
+          // Mettre à jour la conversation
+          state.conversations[conversationId] = mergedMessages;
+          
+          console.log(`Updated messages for conversation ${conversationId}, count: ${mergedMessages.length}`);
         } else {
           console.error('Invalid payload format in fetchConversationMessages.fulfilled:', action.payload);
         }
       })
       .addCase(fetchConversationMessages.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload;
+        state.error = action.payload || 'Échec du chargement des messages';
         console.error('Failed to fetch messages:', action.payload);
       })
+      
       // Send Message
       .addCase(sendMessage.pending, (state) => {
         state.error = null;
@@ -383,9 +518,10 @@ const messagesSlice = createSlice({
           return;
         }
         
-        const conversationId = message.conversationId;
-        console.log(`Adding new message to conversation ${conversationId}:`, message);
+        // Normaliser l'ID de conversation
+        const conversationId = normalizeConversationId(message.conversationId);
         
+        // Initialiser la conversation si elle n'existe pas encore
         if (!state.conversations[conversationId]) {
           state.conversations[conversationId] = [];
         }
@@ -398,8 +534,12 @@ const messagesSlice = createSlice({
         if (!messageExists) {
           state.conversations[conversationId].push(message);
           
-          // Sort by timestamp
-          state.conversations[conversationId].sort((a, b) => a.timestamp - b.timestamp);
+          // Trier par timestamp
+          state.conversations[conversationId].sort((a, b) => {
+            const timestampA = a.timestamp || 0;
+            const timestampB = b.timestamp || 0;
+            return timestampA - timestampB;
+          });
           
           console.log(`Message added to conversation ${conversationId}, new count:`, 
             state.conversations[conversationId].length);
@@ -408,11 +548,18 @@ const messagesSlice = createSlice({
         }
       })
       .addCase(sendMessage.rejected, (state, action) => {
-        state.error = action.payload;
+        state.error = action.payload || 'Échec de l\'envoi du message';
       });
   },
 });
 
-export const { setActiveConversation, addMessage, updateMessageStatus, clearMessageError } = messagesSlice.actions;
+export const { 
+  setActiveConversation, 
+  addMessage, 
+  updateMessageStatus, 
+  clearMessageError,
+  markConversationAsRead,
+  hydrateConversations
+} = messagesSlice.actions;
 
 export default messagesSlice.reducer;

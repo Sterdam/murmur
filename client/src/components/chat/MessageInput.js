@@ -1,12 +1,12 @@
-// client/src/components/chat/MessageInput.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
 import { RiSendPlaneFill, RiAttachment2, RiEmotionLine } from 'react-icons/ri';
 import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
-import { sendMessage } from '../../store/slices/messagesSlice';
+import { sendMessage, clearMessageError } from '../../store/slices/messagesSlice';
+import socketService from '../../services/socket';
 
 const InputContainer = styled.div`
   padding: 16px;
@@ -30,16 +30,18 @@ const TextArea = styled.textarea`
   padding: 12px 16px;
   border-radius: 24px;
   background-color: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, ${({ error }) => (error ? '0.24' : '0.12')});
   color: ${({ theme }) => theme.colors.textPrimary};
   outline: none;
   resize: none;
   max-height: 120px;
+  min-height: 42px;
   font-family: inherit;
   font-size: 1rem;
+  transition: border-color 0.2s;
   
   &:focus {
-    border-color: ${({ theme }) => theme.colors.primary};
+    border-color: ${({ theme, error }) => error ? theme.colors.error : theme.colors.primary};
   }
   
   &::placeholder {
@@ -63,15 +65,20 @@ const IconButton = styled.button`
   color: ${({ theme, primary }) => primary ? theme.colors.onPrimary : theme.colors.textPrimary};
   border: none;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, transform 0.1s;
   
   &:hover {
     background-color: ${({ theme, primary }) => primary ? theme.colors.primaryDark : 'rgba(255, 255, 255, 0.08)'};
   }
   
+  &:active {
+    transform: scale(0.95);
+  }
+  
   &:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    transform: none;
   }
   
   & > svg {
@@ -82,7 +89,7 @@ const IconButton = styled.button`
 const ErrorMessage = styled.div`
   background-color: rgba(244, 67, 54, 0.1);
   color: #f44336;
-  padding: 10px;
+  padding: 10px 16px;
   border-radius: 4px;
   margin-bottom: 12px;
   font-size: 0.875rem;
@@ -99,13 +106,19 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
+  const [contentRows, setContentRows] = useState(1);
+  const [typingTimeout, setTypingTimeout] = useState(null);
+  const [lastTypingSignal, setLastTypingSignal] = useState(0);
   
+  const textAreaRef = useRef(null);
   const dispatch = useDispatch();
   const { contacts } = useSelector((state) => state.contacts);
+  const { user } = useSelector((state) => state.auth);
+  const { error: messageError } = useSelector((state) => state.messages);
   
-  // Fonction pour normaliser les IDs de conversation
-  const normalizeConversationId = (id) => {
-    if (!id) return id;
+  // Normaliser l'ID de conversation de façon cohérente
+  const normalizeConversationId = useCallback((id) => {
+    if (!id) return null;
     
     // Si c'est un ID de groupe, le laisser tel quel
     if (id.startsWith('group:')) return id;
@@ -120,35 +133,108 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     
     // Format inconnu, retourner tel quel
     return id;
-  };
+  }, []);
   
   // Normaliser l'ID de conversation
   const normalizedConversationId = conversationId ? normalizeConversationId(conversationId) : null;
   
-  // Find the recipient in contacts to check public key
-  const recipient = recipientId ? contacts.find(contact => contact.id === recipientId) : null;
-  const hasPublicKey = recipient && recipient.publicKey;
+  // Trouver le destinataire et vérifier sa clé publique
+  const recipient = useCallback(() => {
+    if (!recipientId || !Array.isArray(contacts)) return null;
+    const found = contacts.find(contact => contact?.id === recipientId);
+    return found || null;
+  }, [recipientId, contacts]);
   
-  // Clear error when messageInput changes or unmounts
+  const recipientObj = recipient();
+  const hasPublicKey = recipientObj && recipientObj.publicKey;
+  
+  // Effect pour gérer les erreurs Redux
   useEffect(() => {
-    return () => setError(null);
-  }, [conversationId, recipientId, groupId]);
+    if (messageError) {
+      setError(messageError);
+    }
+    
+    return () => {
+      if (messageError) {
+        dispatch(clearMessageError());
+      }
+    };
+  }, [messageError, dispatch]);
   
+  // Effect pour réinitialiser les erreurs lors du changement de conversation
+  useEffect(() => {
+    setError(null);
+    return () => {
+      if (typingTimeout) {
+        clearTimeout(typingTimeout);
+      }
+    };
+  }, [conversationId, recipientId, groupId, typingTimeout]);
+  
+  // Fonction pour calculer le nombre de lignes du message
+  const calculateRows = useCallback((text) => {
+    if (!text) return 1;
+    const lineCount = (text.match(/\n/g) || []).length + 1;
+    return Math.min(Math.max(lineCount, 1), 5); // Max 5 lines
+  }, []);
+  
+  // Gérer la saisie dans le textarea
+  const handleMessageChange = (e) => {
+    const newMessage = e.target.value;
+    setMessage(newMessage);
+    
+    // Ajuster le nombre de lignes
+    setContentRows(calculateRows(newMessage));
+    
+    // Effacer les erreurs lors de la saisie
+    if (error) {
+      setError(null);
+    }
+    
+    // Envoyer un signal de frappe
+    const now = Date.now();
+    if (normalizedConversationId && now - lastTypingSignal > 3000) { // Limiter à un signal toutes les 3 secondes
+      if (socketService.isConnected()) {
+        socketService.sendTypingIndicator({
+          conversationId: normalizedConversationId,
+          senderId: user?.id,
+          senderUsername: user?.username
+        });
+        setLastTypingSignal(now);
+      }
+      
+      // Nettoyer le timeout précédent
+      if (typingTimeout) {
+        clearTimeout(typingTimeout);
+      }
+    }
+  };
+  
+  // Soumettre le message
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Validate message
-    if (!message.trim() || sending) return;
+    // Nettoyer le message
+    const trimmedMessage = message.trim();
     
-    // Vérifications supplémentaires
+    // Validation
+    if (!trimmedMessage || sending) return;
+    
+    // Vérifications additionnelles
     if (!recipientId && !groupId) {
       setError("Impossible d'envoyer le message : destinataire non spécifié.");
       return;
     }
     
-    // Check if recipient public key is available for direct messages
+    // Vérifier la clé publique pour les messages directs
     if (recipientId && !hasPublicKey) {
-      setError('Cannot send message - the recipient has not shared their public key. You need to be connected contacts to exchange messages securely.');
+      setError("Impossible d'envoyer le message : le destinataire n'a pas partagé sa clé publique. Vous devez être contacts connectés pour échanger des messages en toute sécurité.");
+      return;
+    }
+    
+    // Vérifier si dans un groupe
+    if (groupId && !normalizedConversationId?.startsWith('group:')) {
+      setError("Erreur de configuration de conversation : l'ID de groupe est invalide.");
       return;
     }
     
@@ -156,48 +242,75 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
       setSending(true);
       setError(null);
       
-      // Send message
-      await dispatch(sendMessage({
-        message: message.trim(),
-        recipientId,
-        groupId,
+      // Préparer les données du message
+      const messageData = {
+        message: trimmedMessage,
         conversationId: normalizedConversationId
-      })).unwrap();
+      };
       
-      // Clear input
+      // Ajouter les identifiants appropriés
+      if (recipientId) {
+        messageData.recipientId = recipientId;
+      } else if (groupId) {
+        messageData.groupId = groupId;
+      }
+      
+      // Dispatch de l'action d'envoi
+      await dispatch(sendMessage(messageData)).unwrap();
+      
+      // Réinitialiser le formulaire après succès
       setMessage('');
+      setContentRows(1);
+      
+      // Focus sur le textarea
+      if (textAreaRef.current) {
+        textAreaRef.current.focus();
+      }
     } catch (error) {
       console.error('Failed to send message:', error);
       
-      // Handle specific errors
-      if (typeof error === 'string' && error.includes && error.includes('public key')) {
-        setError('Cannot send message securely. Make sure you are connected with this contact before exchanging messages.');
+      // Gérer les erreurs spécifiques
+      if (typeof error === 'string') {
+        if (error.includes('public key')) {
+          setError("Impossible d'envoyer le message en toute sécurité. Assurez-vous d'être connecté avec ce contact avant d'échanger des messages.");
+        } else if (error.includes('network') || error.includes('connexion')) {
+          setError("Problème de connexion. Le message sera envoyé dès que vous serez à nouveau en ligne.");
+        } else {
+          setError(error);
+        }
       } else if (error && error.message) {
         setError(error.message);
       } else {
-        setError('Failed to send message. Please try again.');
+        setError("Échec de l'envoi du message. Veuillez réessayer.");
       }
     } finally {
       setSending(false);
     }
   };
   
+  // Gérer les touches spéciales (notamment Entrée pour envoyer)
   const handleKeyDown = (e) => {
-    // Send message on Enter (without Shift key)
+    // Envoyer le message sur Entrée (sans Shift)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
     }
+    
+    // Agrandir le textarea sur Shift+Entrée
+    if (e.key === 'Enter' && e.shiftKey) {
+      const newValue = message + '\n';
+      setContentRows(calculateRows(newValue));
+    }
   };
   
-  // Placeholder text based on state
+  // Texte de placeholder en fonction de l'état
   const getPlaceholderText = () => {
     if (!conversationId) return "Chargement de la conversation...";
-    if (!hasPublicKey && recipientId) return "Vous devez être connecté avec ce contact avant de pouvoir échanger des messages";
+    if (!hasPublicKey && recipientId) return "Vous devez être connecté avec ce contact pour envoyer des messages";
     if (sending) return "Envoi en cours...";
     return "Tapez un message...";
   };
-
+  
   return (
     <InputContainer>
       <InputForm onSubmit={handleSubmit}>
@@ -211,27 +324,26 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
         <InputRow>
           <IconButton
             type="button"
-            title="Attach file"
+            title="Joindre un fichier"
             disabled={!hasPublicKey && recipientId || sending}
           >
             <RiAttachment2 />
           </IconButton>
           
           <TextArea
+            ref={textAreaRef}
             placeholder={getPlaceholderText()}
             value={message}
-            onChange={(e) => {
-              setMessage(e.target.value);
-              if (error) setError(null);
-            }}
+            onChange={handleMessageChange}
             onKeyDown={handleKeyDown}
-            rows={1}
+            rows={contentRows}
+            error={!!error}
             disabled={sending || (!hasPublicKey && recipientId) || !conversationId}
           />
           
           <IconButton
             type="button"
-            title="Add emoji"
+            title="Ajouter un emoji"
             disabled={!hasPublicKey && recipientId || sending}
           >
             <RiEmotionLine />
@@ -241,7 +353,7 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
             type="submit" 
             primary 
             disabled={message.trim() === '' || sending || (!hasPublicKey && recipientId) || !conversationId}
-            title="Send message"
+            title="Envoyer le message"
           >
             <RiSendPlaneFill />
           </IconButton>
