@@ -1,11 +1,11 @@
 // client/src/App.js
-import React, { useEffect, createContext, useState, useCallback } from 'react';
+import React, { useEffect, createContext, useState, useCallback, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import socketService from './services/socket';
 import { getEncryptionKeys } from './utils/storage';
 import { setKeys } from './store/slices/authSlice';
-import { addMessage, updateMessageStatus } from './store/slices/messagesSlice';
+import { addMessage, updateMessageStatus, normalizeConversationId } from './store/slices/messagesSlice';
 import { decryptMessage } from './services/encryption';
 import { rehydrateStoreAction } from './store/persistMiddleware';
 
@@ -48,6 +48,9 @@ const App = () => {
   const dispatch = useDispatch();
   const [initialized, setInitialized] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
+  
+  // Référence pour suivre si on a déjà initialisé le socket
+  const socketInitialized = useRef(false);
 
   // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
   const handlePrivateMessage = useCallback(async (data) => {
@@ -230,6 +233,51 @@ const App = () => {
     }
   };
 
+  // CORRECTION: Utiliser un useEffect séparé pour initialiser le socket une seule fois
+  useEffect(() => {
+    if (isAuthenticated && token && !socketInitialized.current) {
+      console.log("Connecting to socket with token (initialization)");
+      
+      // Connecter le socket avec le token
+      if (socketService.connect(token)) {
+        console.log("Socket connected, setting up handlers");
+        socketInitialized.current = true;
+        setSocketConnected(true);
+        
+        // Configurer les gestionnaires de messages
+        socketService.setupEventHandlers(
+          handlePrivateMessage,
+          handleGroupMessage,
+          handleMessageDelivery,
+          handleTypingIndicator
+        );
+        
+        // Rejoindre tous les groupes de l'utilisateur
+        if (groups && groups.length > 0) {
+          socketService.joinGroups(groups);
+        }
+      }
+    }
+    
+    // Nettoyage à la déconnexion
+    return () => {
+      if (socketConnected) {
+        console.log("Disconnecting socket on cleanup");
+        socketService.disconnect();
+        setSocketConnected(false);
+      }
+    };
+  }, [
+    isAuthenticated, 
+    token,
+    handlePrivateMessage,
+    handleGroupMessage,
+    handleMessageDelivery,
+    handleTypingIndicator,
+    groups,
+    socketConnected
+  ]);
+
   // Initialiser l'application
   useEffect(() => {
     const initializeApp = async () => {
@@ -244,61 +292,20 @@ const App = () => {
           dispatch(setKeys(keys));
         }
         
-        // Initialiser la connexion socket si authentifié
-        if (isAuthenticated && token) {
-          console.log("Connexion au socket avec token");
-          
-          // Connecter le socket avec le token
-          if (socketService.connect(token)) {
-            console.log("Socket connecté, configuration des gestionnaires");
-            setSocketConnected(true);
-            
-            // Configurer les gestionnaires de messages
-            socketService.setupEventHandlers(
-              handlePrivateMessage,
-              handleGroupMessage,
-              handleMessageDelivery,
-              handleTypingIndicator
-            );
-            
-            // Rejoindre tous les groupes de l'utilisateur
-            if (groups && groups.length > 0) {
-              socketService.joinGroups(groups);
-            }
-          }
-        } else {
-          setSocketConnected(false);
-        }
+        setInitialized(true);
       } catch (error) {
         console.error("Erreur d'initialisation de l'app:", error);
-      } finally {
         setInitialized(true);
       }
     };
     
     initializeApp();
-    
-    // Nettoyage à la déconnexion
-    return () => {
-      if (socketService.isConnected()) {
-        socketService.disconnect();
-        setSocketConnected(false);
-      }
-    };
-  }, [
-    isAuthenticated, 
-    token, 
-    dispatch, 
-    groups,
-    handlePrivateMessage,
-    handleGroupMessage,
-    handleMessageDelivery,
-    handleTypingIndicator
-  ]);
+  }, [dispatch]);
 
-  // Effet pour reconnecter le socket si les groupes changent
+  // CORRECTION: Effet pour reconnecter le socket si les groupes changent
   useEffect(() => {
     if (socketConnected && groups && groups.length > 0) {
+      console.log("Joining groups after groups update");
       // Rejoindre tous les nouveaux groupes
       socketService.joinGroups(groups);
     }

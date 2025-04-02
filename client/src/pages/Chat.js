@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
@@ -216,6 +216,9 @@ const Chat = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
+  // CORRECTION: Référence pour suivre les chargements de données
+  const initialLoadDone = useRef(false);
+  
   // Normaliser l'ID de conversation une fois pour tout le composant
   const normalizedId = useMemo(() => normalizeConversationId(conversationId), [conversationId]);
   
@@ -230,62 +233,68 @@ const Chat = () => {
   const [infoOpen, setInfoOpen] = useState(false);
   const [onlineStatus, setOnlineStatus] = useState(false);
   
-  const loadedRef = React.useRef(false);
-  
-  // Fonction de débogage pour aider à résoudre les problèmes
+  // CORRECTION: Fonction de débogage simplifiée
   const debugConversation = useCallback(() => {
-    console.group('Débogage Chat');
-    console.log('ID conversation original:', conversationId);
-    console.log('ID conversation normalisé:', normalizedId);
-    console.log('Utilisateur actuel:', user?.id, user?.username);
-    console.log('Est un groupe?', isGroup);
-    if (conversation) {
-      console.log('Destinataire:', conversation.id, conversation.username || conversation.name);
-    }
-    console.groupEnd();
-  }, [conversationId, normalizedId, user, isGroup, conversation]);
+    console.log(`[Chat] ID: ${normalizedId}, Group: ${isGroup}, User: ${user?.id}`);
+  }, [normalizedId, isGroup, user]);
   
-  // Load contacts and groups if needed
+  // CORRECTION: Load contacts and groups if needed - une seule fois
   useEffect(() => {
-    if (!loadedRef.current) {
-      loadedRef.current = true;
-      
-      const loadData = async () => {
-        try {
-          // Charger les contacts si nécessaire
-          if (contacts.length === 0 && !contactsLoading) {
-            await dispatch(fetchContacts()).unwrap();
-          }
-          
-          // Charger les groupes si nécessaire
-          if (groups.length === 0 && !groupsLoading) {
-            await dispatch(fetchGroups()).unwrap();
-          }
-        } catch (err) {
-          console.error('Error loading initial data:', err);
+    if (initialLoadDone.current) return;
+    
+    const loadData = async () => {
+      try {
+        const promises = [];
+        
+        // Charger les contacts si nécessaire
+        if (contacts.length === 0 && !contactsLoading) {
+          promises.push(dispatch(fetchContacts()));
         }
-      };
-      
-      loadData();
-    }
+        
+        // Charger les groupes si nécessaire
+        if (groups.length === 0 && !groupsLoading) {
+          promises.push(dispatch(fetchGroups()));
+        }
+        
+        await Promise.all(promises);
+        initialLoadDone.current = true;
+      } catch (err) {
+        console.error('[Chat] Error loading initial data:', err);
+      }
+    };
+    
+    loadData();
   }, [dispatch, contacts.length, groups.length, contactsLoading, groupsLoading]);
   
-  // Configurer les détails de la conversation basés sur l'ID
+  // CORRECTION: Configurer les détails de la conversation basés sur l'ID - ne plus avoir les dépendances problématiques
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId || !normalizedId) return;
+    
+    console.log(`[Chat] Opening conversation ${normalizedId}`);
     
     // Réinitialiser les erreurs
     setError(null);
-    
-    console.log(`Chat: Ouverture de conversation ${conversationId} → ${normalizedId}`);
     
     // Déterminer si c'est une conversation de groupe
     const groupChat = normalizedId.startsWith('group:');
     setIsGroup(groupChat);
     
+    // Définir la conversation active dans Redux (utiliser l'ID normalisé)
+    dispatch(setActiveConversation(normalizedId));
+    
+    // Nettoyer lors du démontage
+    return () => {
+      dispatch(setActiveConversation(null));
+    };
+  }, [normalizedId, dispatch, conversationId]);
+  
+  // CORRECTION: Configurer la conversation après le chargement des données
+  useEffect(() => {
+    if (!conversationId || !user || !initialLoadDone.current) return;
+    
     let currentConversation = null;
     
-    if (groupChat) {
+    if (isGroup) {
       // Pour les conversations de groupe, extraire l'ID du groupe et trouver le groupe
       const groupId = normalizedId.replace('group:', '');
       
@@ -296,7 +305,7 @@ const Chat = () => {
           isGroup: true
         };
       } else if (!groupsLoading && groups.length > 0) {
-        console.error('Groupe non trouvé:', groupId);
+        console.error('[Chat] Group not found:', groupId);
         setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
     } else if (normalizedId.includes(':')) {
@@ -317,13 +326,13 @@ const Chat = () => {
           // Simuler un statut en ligne aléatoire (pour démo)
           setOnlineStatus(Math.random() > 0.5);
         } else if (!contactsLoading && contacts.length > 0) {
-          console.error('Contact non trouvé:', otherUserId);
+          console.error('[Chat] Contact not found:', otherUserId);
           setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
     } else {
       // Format d'ID non standard
-      console.warn('Format d\'ID de conversation non standard, tentative de chargement quand même');
+      console.warn('[Chat] Non-standard conversation ID format, trying to load anyway');
       // Pour ces cas, on crée un objet de conversation "minimal"
       currentConversation = {
         id: normalizedId,
@@ -333,18 +342,9 @@ const Chat = () => {
     }
     
     setConversation(currentConversation);
-    
-    // Définir la conversation active dans Redux (utiliser l'ID normalisé)
-    dispatch(setActiveConversation(normalizedId));
-    
-    // Appeler la fonction de débogage
     debugConversation();
     
-    return () => {
-      // Effacer la conversation active au démontage
-      dispatch(setActiveConversation(null));
-    };
-  }, [conversationId, dispatch, groups, contacts, user, debugConversation, normalizedId, groupsLoading, contactsLoading]);
+  }, [normalizedId, isGroup, user, contacts, groups, conversationId, contactsLoading, groupsLoading, debugConversation]);
   
   // Mettre à jour l'erreur si une erreur Redux est détectée
   useEffect(() => {

@@ -99,11 +99,14 @@ export const fetchConversationMessages = createAsyncThunk(
               return null;
             }
             
+            // S'assurer que l'ID de conversation est normalisé
+            const msgConversationId = normalizeConversationId(normalizedId);
+            
             // Si l'utilisateur est l'expéditeur, pas besoin de déchiffrer
             if (message.senderId === currentUser?.id) {
               return {
                 ...message,
-                conversationId: normalizedId, // Normaliser l'ID de conversation
+                conversationId: msgConversationId,
               };
             }
             
@@ -146,7 +149,7 @@ export const fetchConversationMessages = createAsyncThunk(
                 return {
                   ...message,
                   message: '[Message chiffré - Impossible de déchiffrer]',
-                  conversationId: normalizedId,
+                  conversationId: msgConversationId,
                   encryptionFailed: true
                 };
               }
@@ -154,7 +157,7 @@ export const fetchConversationMessages = createAsyncThunk(
               return {
                 ...message,
                 message: decryptedText,
-                conversationId: normalizedId,
+                conversationId: msgConversationId,
                 encryptionFailed: false
               };
             } catch (error) {
@@ -162,7 +165,7 @@ export const fetchConversationMessages = createAsyncThunk(
               return {
                 ...message,
                 message: '[Message chiffré - Échec du déchiffrement]',
-                conversationId: normalizedId,
+                conversationId: msgConversationId,
                 encryptionFailed: true
               };
             }
@@ -453,12 +456,14 @@ const messagesSlice = createSlice({
         state.conversations[conversationId] = [];
       }
       
-      // Vérifier si le message existe déjà pour éviter les doublons
-      const messageExists = state.conversations[conversationId].some(
+      // CORRECTION: Vérifier si le message existe déjà pour éviter les doublons
+      // Utiliser une comparaison plus stricte
+      const existingMessageIndex = state.conversations[conversationId].findIndex(
         (msg) => msg.id === message.id
       );
       
-      if (!messageExists) {
+      if (existingMessageIndex === -1) {
+        // Le message n'existe pas encore, l'ajouter
         state.conversations[conversationId].push(message);
         
         // Trier les messages par timestamp
@@ -467,6 +472,11 @@ const messagesSlice = createSlice({
           const timestampB = b.timestamp || 0;
           return timestampA - timestampB;
         });
+        
+        console.log(`Message added to conversation ${conversationId}, ID: ${message.id}`);
+      } else {
+        // Le message existe déjà, ne rien faire
+        console.log(`Message ${message.id} already exists in conversation ${conversationId}`);
       }
     },
     updateMessageStatus: (state, action) => {
@@ -547,10 +557,16 @@ const messagesSlice = createSlice({
           // Normaliser l'ID de conversation
           const conversationId = normalizeConversationId(action.payload.conversationId);
           
+          // CORRECTION: Vérifier si l'ID de conversation existe déjà dans state.conversations
+          if (!state.conversations[conversationId]) {
+            state.conversations[conversationId] = [];
+          }
+          
           // Fusionner les messages existants et nouveaux
-          const existingMessages = state.conversations[conversationId] || [];
+          const existingMessages = state.conversations[conversationId];
           const newMessages = action.payload.messages;
           
+          // CORRECTION: Amélioration de la fusion des messages pour éviter les duplications
           // Créer un Map pour éliminer les doublons efficacement
           const messageMap = new Map();
           
@@ -564,7 +580,14 @@ const messagesSlice = createSlice({
           // Ajouter ou remplacer par les nouveaux messages
           newMessages.forEach(msg => {
             if (msg && msg.id) {
-              messageMap.set(msg.id, msg);
+              // Si le message existe déjà, ne remplacer que si le nouveau a plus d'informations
+              const existingMsg = messageMap.get(msg.id);
+              if (!existingMsg || 
+                  (msg.isRead && !existingMsg.isRead) || 
+                  (msg.status && !existingMsg.status) ||
+                  (!existingMsg.message && msg.message)) {
+                messageMap.set(msg.id, msg);
+              }
             }
           });
           

@@ -264,17 +264,10 @@ const MessageList = ({ conversationId }) => {
   
   // Normaliser l'ID de conversation pour la cohérence
   const normalizedId = normalizeConversationId(conversationId);
-  console.log(`MessageList: Rendu pour conversation ${conversationId} → normalisée: ${normalizedId}`);
   
-  // Obtenir les messages en vérifiant les deux formes d'ID possible
+  // Obtenir les messages en utilisant l'ID normalisé
   const messages = useSelector((state) => {
-    const messagesNormalized = state.messages.conversations[normalizedId] || [];
-    const messagesOriginal = state.messages.conversations[conversationId] || [];
-    
-    // Utiliser celui qui a des messages, en préférant l'ID normalisé
-    const result = messagesNormalized.length > 0 ? messagesNormalized : messagesOriginal;
-    console.log(`MessageList: ${result.length} messages trouvés pour ${normalizedId}`);
-    return result;
+    return state.messages.conversations[normalizedId] || [];
   });
   
   const listContainerRef = useRef(null);
@@ -285,95 +278,98 @@ const MessageList = ({ conversationId }) => {
   const [oldScrollHeight, setOldScrollHeight] = useState(0);
   const [lastLoadTime, setLastLoadTime] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasInitiallyLoaded, setHasInitiallyLoaded] = useState(false);
   
-  // Effet pour charger les messages au montage du composant
+  // CORRECTION: Flag pour éviter les chargements en boucle
+  const loadingRef = useRef(false);
+  
+  // CORRECTION: Effet de chargement initial amélioré
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId || !normalizedId || loadingRef.current) return;
     
     // Nettoyer les erreurs précédentes
     setLocalError(null);
-    setIsInitialLoad(true);
     
-    // Référence pour savoir si le composant est monté
-    const isMounted = { current: true };
-    
-    // Fonction pour charger les messages
     const loadMessages = async () => {
-      // Vérifier s'il n'est pas trop tôt pour recharger
-      const now = Date.now();
-      if (now - lastLoadTime < 2000 && messages.length > 0) {
-        console.log(`Skip loading messages: throttled (last load ${now - lastLoadTime}ms ago)`);
-        return;
-      }
-      
-      // Vérifier si on a une requête en cours pour éviter les doublons
-      if (loading && loadingConversationId === normalizedId) {
-        console.log('Skip loading messages: already in progress');
-        return;
-      }
+      // Éviter les chargements simultanés
+      if (loadingRef.current) return;
+      loadingRef.current = true;
       
       try {
-        console.log(`Loading messages for conversation: ${normalizedId}`);
+        console.log(`[MessageList] Initial loading for: ${normalizedId}`);
         setIsLoadingMore(true);
         
         await dispatch(fetchConversationMessages(normalizedId)).unwrap();
         
-        // Mettre à jour le dernier temps de chargement
+        setIsInitialLoad(false);
+        setHasInitiallyLoaded(true);
         setLastLoadTime(Date.now());
+        setIsLoadingMore(false);
         
-        // Vérifier si le composant est toujours monté avant de mettre à jour l'état
-        if (isMounted.current) {
-          setIsInitialLoad(false);
-          setIsLoadingMore(false);
-          
-          // Marquer la conversation comme lue
+        // Marquer comme lu après chargement initial
+        if (user?.id) {
           dispatch(markConversationAsRead({
             conversationId: normalizedId,
-            userId: user?.id
+            userId: user.id
           }));
         }
       } catch (err) {
-        console.error('Failed to fetch messages:', err);
-        
-        // Vérifier si le composant est toujours monté avant de mettre à jour l'état
-        if (isMounted.current) {
-          setLocalError(err);
-          setIsInitialLoad(false);
-          setIsLoadingMore(false);
-        }
+        console.error('[MessageList] Error loading messages:', err);
+        setLocalError(err);
+        setIsInitialLoad(false);
+        setIsLoadingMore(false);
+      } finally {
+        loadingRef.current = false;
       }
     };
     
-    // Charger les messages initialement avec un léger délai
-    // pour éviter les requêtes simultanées lors de la navigation
-    const initialLoadTimer = setTimeout(() => {
+    // Utiliser un timeout pour éviter les chargements trop rapprochés
+    const timer = setTimeout(() => {
       loadMessages();
     }, 300);
     
-    // Configurer un intervalle pour rafraîchir périodiquement mais moins fréquemment
-    // 2 minutes au lieu de 1 minute pour réduire la charge serveur
-    const intervalId = setInterval(() => {
-      // Ne pas rafraîchir si le composant n'est pas visible (onglet en arrière-plan)
-      if (!document.hidden) {
-        console.log('Refreshing messages in background');
-        loadMessages().catch(err => {
-          console.warn('Background message refresh failed:', err);
-        });
-      }
-    }, 120000); // 2 minutes
-    
-    // Nettoyage à la suppression du composant
     return () => {
-      clearTimeout(initialLoadTimer);
-      clearInterval(intervalId);
-      isMounted.current = false;
-      setLocalError(null);
+      clearTimeout(timer);
     };
-  }, [normalizedId, dispatch, messages.length, loading, loadingConversationId, lastLoadTime, user?.id]);
+  }, [normalizedId, dispatch, user?.id]);
+  
+  // CORRECTION: Effet séparé pour les rafraîchissements périodiques
+  useEffect(() => {
+    if (!normalizedId || !hasInitiallyLoaded) return;
+    
+    // Configurer l'intervalle de rafraîchissement
+    const intervalId = setInterval(() => {
+      // Ne pas rafraîchir si l'onglet est en arrière-plan, si un chargement est en cours, ou si le délai est trop court
+      if (document.hidden || loadingRef.current || Date.now() - lastLoadTime < 10000) {
+        return;
+      }
+      
+      const refreshMessages = async () => {
+        if (loadingRef.current) return;
+        loadingRef.current = true;
+        
+        try {
+          console.log('[MessageList] Background refresh');
+          await dispatch(fetchConversationMessages(normalizedId)).unwrap();
+          setLastLoadTime(Date.now());
+        } catch (err) {
+          console.warn('[MessageList] Background refresh failed:', err);
+        } finally {
+          loadingRef.current = false;
+        }
+      };
+      
+      refreshMessages();
+    }, 30000); // Rafraîchir toutes les 30 secondes
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [normalizedId, hasInitiallyLoaded, lastLoadTime, dispatch]);
   
   // Surveiller les changements dans les messages pour détecter les nouveaux messages
   useEffect(() => {
-    if (listContainerRef.current) {
+    if (listContainerRef.current && messages.length > 0) {
       const { scrollTop, scrollHeight, clientHeight } = listContainerRef.current;
       const atBottom = scrollHeight - scrollTop - clientHeight < 50;
       
@@ -393,7 +389,7 @@ const MessageList = ({ conversationId }) => {
             userId: user.id
           }));
         }
-      } else if (scrollHeight > oldScrollHeight) {
+      } else if (scrollHeight > oldScrollHeight && oldScrollHeight > 0) {
         // Si de nouveaux messages sont arrivés mais nous ne sommes pas en bas
         setHasNewMessages(true);
       }
@@ -405,6 +401,9 @@ const MessageList = ({ conversationId }) => {
   
   // Fonction pour réessayer de charger les messages en cas d'erreur
   const handleRetry = async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    
     setLocalError(null);
     setIsLoadingMore(true);
     
@@ -413,9 +412,11 @@ const MessageList = ({ conversationId }) => {
       setLastLoadTime(Date.now());
       setIsLoadingMore(false);
     } catch (err) {
-      console.error('Retry failed:', err);
+      console.error('[MessageList] Retry failed:', err);
       setLocalError(err);
       setIsLoadingMore(false);
+    } finally {
+      loadingRef.current = false;
     }
   };
   
@@ -505,13 +506,12 @@ const MessageList = ({ conversationId }) => {
     const { scrollTop } = listContainerRef.current;
     
     // Si on est au début de la liste et il y a déjà des messages, charger plus
-    if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore) {
+    if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore && !loadingRef.current) {
       // Ici on pourrait implémenter la pagination pour charger les messages plus anciens
-      console.log('Top of chat reached, could load older messages');
-      // Pour l'instant on recharge simplement tous les messages
+      console.log('[MessageList] Top of chat reached, could load older messages');
       handleRetry();
     }
-  }, [loading, isLoadingMore, messages.length, handleRetry]);
+  }, [loading, isLoadingMore, messages.length]);
   
   // Ajouter l'écouteur d'événement de scroll
   useEffect(() => {
@@ -562,7 +562,7 @@ const MessageList = ({ conversationId }) => {
   }
   
   // Afficher un état de chargement pour le chargement initial
-  if (loading && messages.length === 0) {
+  if (isInitialLoad && messages.length === 0) {
     return (
       <EmptyState>
         <LoadingIndicator>
@@ -575,7 +575,7 @@ const MessageList = ({ conversationId }) => {
   }
   
   // Afficher un état vide si aucun message
-  if (!loading && messages.length === 0) {
+  if (!isInitialLoad && messages.length === 0) {
     return (
       <EmptyState>
         <h3>Aucun message pour le moment</h3>
