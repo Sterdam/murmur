@@ -45,6 +45,10 @@ const Register = () => {
     confirmPassword: '',
   });
   
+  // Add local state for error and loading management
+  const [localError, setLocalError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  
   const { loading, error, isAuthenticated } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
   const navigate = useNavigate();
@@ -60,6 +64,7 @@ const Register = () => {
   
   const handleChange = (e) => {
     if (error) dispatch(clearError());
+    if (localError) setLocalError(null);
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
   
@@ -67,14 +72,13 @@ const Register = () => {
     e.preventDefault();
     
     if (password !== confirmPassword) {
-      // Ajouter un message d'erreur visuel
-      setError('Passwords do not match');
+      setLocalError('Passwords do not match');
       return;
     }
     
     try {
-      setError(null);
-      setLoading(true);
+      setLocalError(null);
+      setIsLoading(true);
       
       // Étape 1: Génération des clés de cryptage
       console.log("Generating encryption keys...");
@@ -122,9 +126,9 @@ const Register = () => {
       }, 800); // Délai légèrement plus long pour permettre la mise à jour du state
     } catch (error) {
       console.error('Registration failed:', error);
-      setError(error.message || 'Registration failed. Please try again.');
+      setLocalError(error.message || 'Registration failed. Please try again.');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
@@ -141,7 +145,7 @@ const Register = () => {
         
         <CardContent>
           <form onSubmit={handleSubmit}>
-            {error && <ErrorMessage>{error}</ErrorMessage>}
+            {(error || localError) && <ErrorMessage>{error || localError}</ErrorMessage>}
             
             <TextField
               id="username"
@@ -183,10 +187,10 @@ const Register = () => {
             <Button 
               type="submit" 
               fullWidth 
-              disabled={loading || passwordMismatch}
+              disabled={loading || isLoading || passwordMismatch}
               style={{ marginTop: '16px' }}
             >
-              {loading ? 'Creating Account...' : 'Register'}
+              {loading || isLoading ? 'Creating Account...' : 'Register'}
             </Button>
           </form>
         </CardContent>
