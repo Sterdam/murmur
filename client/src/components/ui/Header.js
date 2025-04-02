@@ -1,11 +1,19 @@
 import React, { useContext } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiHome, FiMessageCircle, FiUsers, FiSettings, FiUser, FiLogOut } from 'react-icons/fi';
+import { 
+  FiHome, 
+  FiMessageCircle, 
+  FiUsers, 
+  FiSettings, 
+  FiUser, 
+  FiLogOut 
+} from 'react-icons/fi';
 import { useDispatch } from 'react-redux';
 
 import { SecurityContext } from '../../App';
 import { logout } from '../../store/slices/authSlice';
+import ContactRequestBadge from './ContactRequestBadge';
 
 const HeaderContainer = styled.header`
   background-color: ${({ theme }) => theme.colors.surface};
@@ -50,6 +58,7 @@ const NavLink = styled(Link)`
   font-size: 0.75rem;
   opacity: 0.8;
   transition: opacity 0.2s;
+  position: relative;
   
   &:hover {
     opacity: 1;
@@ -84,6 +93,12 @@ const LogoutButton = styled.button`
   }
 `;
 
+const RequestBadgeWrapper = styled.div`
+  position: absolute;
+  top: -4px;
+  right: -8px;
+`;
+
 const Header = () => {
   const { user, isAuthenticated } = useContext(SecurityContext);
   const dispatch = useDispatch();
@@ -102,32 +117,35 @@ const Header = () => {
         <Logo to="/">Murmur</Logo>
         
         <Nav>
-          <NavLink to="/">
+          <NavLink to="/" title="Home">
             <FiHome />
             <span>Home</span>
           </NavLink>
           
-          <NavLink to="/contacts">
+          <NavLink to="/contacts" title="Contacts">
             <FiMessageCircle />
-            <span>Messages</span>
+            <span>Contacts</span>
+            <RequestBadgeWrapper>
+              <ContactRequestBadge size="small" />
+            </RequestBadgeWrapper>
           </NavLink>
           
-          <NavLink to="/groups">
+          <NavLink to="/groups" title="Groups">
             <FiUsers />
             <span>Groups</span>
           </NavLink>
           
-          <NavLink to="/profile">
+          <NavLink to="/profile" title="Profile">
             <FiUser />
             <span>Profile</span>
           </NavLink>
           
-          <NavLink to="/settings">
+          <NavLink to="/settings" title="Settings">
             <FiSettings />
             <span>Settings</span>
           </NavLink>
           
-          <LogoutButton onClick={handleLogout}>
+          <LogoutButton onClick={handleLogout} title="Logout">
             <FiLogOut />
             <span>Logout</span>
           </LogoutButton>

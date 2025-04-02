@@ -1,3 +1,4 @@
+// client/src/store/slices/messagesSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 import socketService from '../../services/socket';
@@ -28,6 +29,13 @@ export const fetchConversationMessages = createAsyncThunk(
           }
           
           try {
+            if (!message.encryptedKey || !privateKey) {
+              return {
+                ...message,
+                message: '[Encrypted message - Cannot decrypt]',
+              };
+            }
+            
             const decrypted = await decryptMessage(
               message.message,
               message.encryptedKey,
@@ -42,7 +50,7 @@ export const fetchConversationMessages = createAsyncThunk(
             console.error('Failed to decrypt message:', error);
             return {
               ...message,
-              message: '[Encrypted message]',
+              message: '[Encrypted message - Decryption failed]',
             };
           }
         })
@@ -63,19 +71,29 @@ export const sendMessage = createAsyncThunk(
   async ({ recipientId, groupId, message }, { rejectWithValue, getState }) => {
     try {
       const currentUser = getState().auth.user;
+      const contacts = getState().contacts.contacts;
       let encryptedData;
       
       if (recipientId) {
-        // Direct message
-        const recipient = getState().contacts.contacts.find(
+        // Direct message - Find recipient's public key
+        const recipient = contacts.find(
           (contact) => contact.id === recipientId
         );
         
-        if (!recipient || !recipient.publicKey) {
-          return rejectWithValue('Recipient public key not available');
+        if (!recipient) {
+          return rejectWithValue('Recipient not found in contacts');
         }
         
-        encryptedData = await encryptMessage(message, recipient.publicKey);
+        if (!recipient.publicKey) {
+          return rejectWithValue('Recipient public key not available - You must be connected contacts to exchange messages');
+        }
+        
+        try {
+          encryptedData = await encryptMessage(message, recipient.publicKey);
+        } catch (err) {
+          console.error('Encryption error:', err);
+          return rejectWithValue('Failed to encrypt message');
+        }
         
         // Try to send via socket first
         if (socketService.isConnected()) {
@@ -118,23 +136,33 @@ export const sendMessage = createAsyncThunk(
         
         // Encrypt message for each group member
         const encryptedKeys = {};
+        let anyKeysFound = false;
         
         for (const memberId of group.members) {
           if (memberId === currentUser.id) continue; // Skip self
           
-          const member = getState().contacts.contacts.find(
+          const member = contacts.find(
             (contact) => contact.id === memberId
           );
           
           if (member && member.publicKey) {
-            const encrypted = await encryptMessage(message, member.publicKey);
-            encryptedKeys[memberId] = encrypted.encryptedKey;
+            anyKeysFound = true;
+            try {
+              const encrypted = await encryptMessage(message, member.publicKey);
+              encryptedKeys[memberId] = encrypted.encryptedKey;
+            } catch (err) {
+              console.error(`Failed to encrypt for member ${memberId}:`, err);
+              // Continue with other members
+            }
           }
         }
         
-        if (Object.keys(encryptedKeys).length === 0) {
-          return rejectWithValue('No valid recipients with public keys');
+        if (!anyKeysFound) {
+          return rejectWithValue('No valid recipients with public keys - You must be connected with at least one member');
         }
+        
+        // We'll use the same encrypted message for all recipients to save bandwidth
+        encryptedData = await encryptMessage(message, Object.values(contacts)[0]?.publicKey || 'default-key');
         
         // Try to send via socket first
         if (socketService.isConnected()) {
@@ -169,6 +197,7 @@ export const sendMessage = createAsyncThunk(
         };
       }
     } catch (error) {
+      console.error('Send message error:', error);
       return rejectWithValue(error.message || 'Failed to send message');
     }
   }
@@ -221,7 +250,7 @@ const messagesSlice = createSlice({
         }
       }
     },
-    clearError: (state) => {
+    clearMessageError: (state) => {
       state.error = null;
     },
   },
@@ -263,6 +292,6 @@ const messagesSlice = createSlice({
   },
 });
 
-export const { setActiveConversation, addMessage, updateMessageStatus, clearError } = messagesSlice.actions;
+export const { setActiveConversation, addMessage, updateMessageStatus, clearMessageError } = messagesSlice.actions;
 
 export default messagesSlice.reducer;

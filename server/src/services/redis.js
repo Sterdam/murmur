@@ -1,3 +1,4 @@
+// server/src/services/redis.js
 const Redis = require('ioredis');
 const { v4: uuidv4 } = require('uuid');
 
@@ -37,7 +38,7 @@ const storeMessage = async (message) => {
   const messageData = {
     ...message,
     id: messageId,
-    timestamp: Date.now(),
+    timestamp: message.timestamp || Date.now(),
   };
   
   await redisClient.setex(
@@ -142,13 +143,14 @@ const getUserByUsername = async (username) => {
 };
 
 /**
- * Store contact relationship
+ * Add a contact to a user's contact list
  * @param {string} userId - User ID
  * @param {string} contactId - Contact ID
  */
 const addContact = async (userId, contactId) => {
   if (!userId || !contactId) return;
   
+  // Add contact to user's contact list
   await redisClient.sadd(`contacts:${userId}`, contactId);
 };
 
@@ -161,6 +163,117 @@ const getUserContacts = async (userId) => {
   if (!userId) return [];
   
   return redisClient.smembers(`contacts:${userId}`);
+};
+
+/**
+ * Store a contact request
+ * @param {Object} request - Contact request object
+ * @returns {Promise<string>} - Request ID
+ */
+const storeContactRequest = async (request) => {
+  const requestId = request.id || uuidv4();
+  const requestData = {
+    ...request,
+    id: requestId,
+    createdAt: request.createdAt || Date.now(),
+  };
+  
+  // Store the request with a 30-day expiration
+  await redisClient.setex(
+    `contact-request:${requestId}`,
+    60 * 60 * 24 * 30, // 30 days
+    JSON.stringify(requestData)
+  );
+  
+  // Add to sender's outgoing requests
+  await redisClient.sadd(`contact-requests:outgoing:${request.senderId}`, requestId);
+  
+  // Add to recipient's incoming requests
+  await redisClient.sadd(`contact-requests:incoming:${request.recipientId}`, requestId);
+  
+  return requestId;
+};
+
+/**
+ * Get a contact request by ID
+ * @param {string} requestId - Request ID
+ * @returns {Promise<Object>} - Contact request object
+ */
+const getContactRequestById = async (requestId) => {
+  if (!requestId) return null;
+  
+  const requestData = await redisClient.get(`contact-request:${requestId}`);
+  return requestData ? JSON.parse(requestData) : null;
+};
+
+/**
+ * Get incoming contact requests for a user
+ * @param {string} userId - User ID
+ * @returns {Promise<Array>} - Array of contact request objects
+ */
+const getIncomingContactRequests = async (userId) => {
+  if (!userId) return [];
+  
+  const requestIds = await redisClient.smembers(`contact-requests:incoming:${userId}`);
+  
+  if (!requestIds.length) return [];
+  
+  const requests = await Promise.all(
+    requestIds.map(async (id) => {
+      const requestData = await redisClient.get(`contact-request:${id}`);
+      return requestData ? JSON.parse(requestData) : null;
+    })
+  );
+  
+  // Filter out requests that don't exist
+  return requests.filter(Boolean);
+};
+
+/**
+ * Get outgoing contact requests for a user
+ * @param {string} userId - User ID
+ * @returns {Promise<Array>} - Array of contact request objects
+ */
+const getOutgoingContactRequests = async (userId) => {
+  if (!userId) return [];
+  
+  const requestIds = await redisClient.smembers(`contact-requests:outgoing:${userId}`);
+  
+  if (!requestIds.length) return [];
+  
+  const requests = await Promise.all(
+    requestIds.map(async (id) => {
+      const requestData = await redisClient.get(`contact-request:${id}`);
+      return requestData ? JSON.parse(requestData) : null;
+    })
+  );
+  
+  // Filter out requests that don't exist
+  return requests.filter(Boolean);
+};
+
+/**
+ * Delete a contact request
+ * @param {string} requestId - Request ID
+ * @returns {Promise<boolean>} - Success status
+ */
+const deleteContactRequest = async (requestId) => {
+  if (!requestId) return false;
+  
+  // Get the request first to find sender and recipient
+  const request = await getContactRequestById(requestId);
+  if (!request) return false;
+  
+  // Remove from sender's outgoing requests
+  await redisClient.srem(`contact-requests:outgoing:${request.senderId}`, requestId);
+  
+  // Remove from recipient's incoming requests
+  await redisClient.srem(`contact-requests:incoming:${request.recipientId}`, requestId);
+  
+  // Delete the request itself
+  await redisClient.del(`contact-request:${requestId}`);
+  
+  return true;
 };
 
 /**
@@ -238,6 +351,11 @@ module.exports = {
   getUserByUsername,
   addContact,
   getUserContacts,
+  storeContactRequest,
+  getContactRequestById,
+  getIncomingContactRequests,
+  getOutgoingContactRequests,
+  deleteContactRequest,
   storeGroup,
   getGroupById,
   getUserGroups,

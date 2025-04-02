@@ -1,9 +1,19 @@
-// client/src/pages/Contacts.js - Corrigé
+// client/src/pages/Contacts.js
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiSearch, FiMessageSquare, FiUserPlus, FiAlertCircle } from 'react-icons/fi';
+import { 
+  FiPlus, 
+  FiSearch, 
+  FiMessageSquare, 
+  FiUserPlus, 
+  FiAlertCircle, 
+  FiUserX, 
+  FiUserCheck, 
+  FiClock,
+  FiRefreshCw
+} from 'react-icons/fi';
 
 // Components
 import Card, { CardHeader, CardTitle, CardContent, CardFooter } from '../components/ui/Card';
@@ -12,11 +22,20 @@ import Button from '../components/ui/Button';
 import Avatar from '../components/ui/Avatar';
 
 // Store & Services
-import { fetchContacts, addContact, clearError } from '../store/slices/contactsSlice';
+import { 
+  fetchContacts, 
+  fetchContactRequests,
+  sendContactRequest, 
+  acceptContactRequest, 
+  rejectContactRequest,
+  clearContactError,
+  clearRequestError, 
+  clearRequestSuccess
+} from '../store/slices/contactsSlice';
 import { setActiveConversation } from '../store/slices/messagesSlice';
 
 const ContactsContainer = styled.div`
-  max-width: 800px;
+  max-width: 1000px;
   margin: 0 auto;
   padding: 32px 16px;
 `;
@@ -41,6 +60,46 @@ const ContactsDescription = styled.p`
   ${({ theme }) => theme.typography.body2};
   color: ${({ theme }) => theme.colors.textSecondary};
   margin: 0;
+`;
+
+const TabsContainer = styled.div`
+  display: flex;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  margin-bottom: 24px;
+  overflow-x: auto;
+`;
+
+const Tab = styled.button`
+  background: none;
+  border: none;
+  padding: 12px 20px;
+  color: ${({ active, theme }) => active ? theme.colors.primary : theme.colors.textSecondary};
+  font-weight: ${({ active }) => active ? '500' : '400'};
+  cursor: pointer;
+  border-bottom: 2px solid ${({ active, theme }) => active ? theme.colors.primary : 'transparent'};
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  
+  &:hover {
+    color: ${({ active, theme }) => active ? theme.colors.primary : theme.colors.textPrimary};
+  }
+  
+  svg {
+    margin-right: 8px;
+  }
+`;
+
+const TabBadge = styled.span`
+  background-color: ${({ theme }) => theme.colors.primary};
+  color: ${({ theme }) => theme.colors.onPrimary};
+  border-radius: 12px;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  margin-left: 8px;
+  min-width: 20px;
+  text-align: center;
 `;
 
 const SearchContainer = styled.div`
@@ -89,13 +148,25 @@ const ContactName = styled.h3`
 
 const ContactStatus = styled.p`
   ${({ theme }) => theme.typography.body2};
-  color: ${({ theme }) => theme.colors.textSecondary};
+  color: ${({ theme, pending, accepted, rejected }) => {
+    if (pending) return theme.colors.secondary;
+    if (accepted) return '#4caf50';
+    if (rejected) return theme.colors.error;
+    return theme.colors.textSecondary;
+  }};
   margin: 0;
+  display: flex;
+  align-items: center;
+  
+  svg {
+    margin-right: 4px;
+  }
 `;
 
 const ContactActions = styled.div`
   display: flex;
   padding: 8px 16px 16px;
+  gap: 8px;
   justify-content: space-between;
 `;
 
@@ -125,6 +196,12 @@ const SuccessMessage = styled.div`
   padding: 10px;
   border-radius: 4px;
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  
+  svg {
+    margin-right: 8px;
+  }
 `;
 
 const ErrorMessage = styled.div`
@@ -150,70 +227,94 @@ const HelpText = styled.div`
   font-size: 0.875rem;
 `;
 
+const RefreshButton = styled(Button)`
+  margin-left: 10px;
+`;
+
 const Contacts = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const { contacts, loading, error } = useSelector((state) => state.contacts);
+  
+  // Redux selectors
+  const { 
+    contacts, 
+    incomingRequests, 
+    outgoingRequests, 
+    loading, 
+    requestLoading,
+    error, 
+    requestError,
+    requestSuccess 
+  } = useSelector((state) => state.contacts);
   const { user } = useSelector((state) => state.auth);
   
+  // Local state
+  const [activeTab, setActiveTab] = useState('contacts');
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [newContactUsername, setNewContactUsername] = useState('');
-  const [addStatus, setAddStatus] = useState({ loading: false, error: null, success: false });
   
+  // Load contacts and requests when the component mounts
   useEffect(() => {
     dispatch(fetchContacts());
+    dispatch(fetchContactRequests());
   }, [dispatch]);
   
-  const filteredContacts = contacts.filter(contact => 
-    contact.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (contact.displayName && contact.displayName.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  // Get filtered contacts based on search term
+  const getFilteredItems = () => {
+    let itemsToFilter = [];
+    
+    if (activeTab === 'contacts') {
+      itemsToFilter = contacts;
+    } else if (activeTab === 'incoming') {
+      itemsToFilter = incomingRequests;
+    } else if (activeTab === 'outgoing') {
+      itemsToFilter = outgoingRequests;
+    }
+    
+    return itemsToFilter.filter(item => 
+      item.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (item.displayName && item.displayName.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+  };
   
-  const handleAddContact = async () => {
+  const filteredItems = getFilteredItems();
+  
+  // Handle sending a contact request
+  const handleSendContactRequest = async () => {
     if (!newContactUsername.trim()) return;
     
     try {
-      setAddStatus({ loading: true, error: null, success: false });
-      
-      // Assurez-vous que le token est valide avant de faire la requête
-      const token = localStorage.getItem('token');
-      if (!token) {
-        throw new Error('Authentication required. Please login again.');
-      }
-      
-      // On utilise unwrap() pour obtenir directement le résultat ou l'erreur
-      await dispatch(addContact(newContactUsername.trim())).unwrap();
-      
-      setAddStatus({ loading: false, error: null, success: true });
+      await dispatch(sendContactRequest(newContactUsername.trim())).unwrap();
       setNewContactUsername('');
       
-      // Reset success message after 3 seconds
-      setTimeout(() => {
-        setAddStatus(prev => ({ ...prev, success: false }));
-        setShowAddForm(false);
-      }, 3000);
-      
+      // Don't auto-hide the form in case user wants to add more contacts
     } catch (error) {
-      console.error('Error adding contact:', error);
-      let errorMessage = '';
-      
-      if (typeof error === 'string') {
-        errorMessage = error;
-      } else if (error.message) {
-        errorMessage = error.message;
-      } else {
-        errorMessage = 'Failed to add contact. Please try again later.';
-      }
-      
-      setAddStatus({ 
-        loading: false, 
-        error: errorMessage, 
-        success: false 
-      });
+      console.error('Failed to send contact request:', error);
     }
   };
   
+  // Handle accepting a contact request
+  const handleAcceptRequest = async (requestId) => {
+    try {
+      await dispatch(acceptContactRequest(requestId)).unwrap();
+      // Automatically refresh contacts after accepting
+      dispatch(fetchContacts());
+    } catch (error) {
+      console.error('Failed to accept contact request:', error);
+    }
+  };
+  
+  // Handle rejecting a contact request
+  const handleRejectRequest = async (requestId) => {
+    try {
+      await dispatch(rejectContactRequest(requestId)).unwrap();
+    } catch (error) {
+      console.error('Failed to reject contact request:', error);
+    }
+  };
+  
+  // Handle opening chat with a contact
   const handleOpenChat = (contact) => {
     if (!contact || !contact.id) return;
     
@@ -232,19 +333,62 @@ const Contacts = () => {
     navigate(`/chat/${conversationId}`);
   };
   
-  // Clear any errors when unmounting
+  // Handle changing the active tab
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    setSearchTerm(''); // Clear search when changing tabs
+  };
+  
+  // Handle closing the add contact form
+  const handleCloseAddForm = () => {
+    setShowAddForm(false);
+    setNewContactUsername('');
+    dispatch(clearRequestError());
+    dispatch(clearRequestSuccess());
+  };
+  
+  // Clear any errors when unmounting the component
   useEffect(() => {
     return () => {
-      dispatch(clearError());
+      dispatch(clearContactError());
+      dispatch(clearRequestError());
     };
   }, [dispatch]);
+  
+  // Clear success message after a delay
+  useEffect(() => {
+    if (requestSuccess) {
+      const timer = setTimeout(() => {
+        dispatch(clearRequestSuccess());
+      }, 5000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [requestSuccess, dispatch]);
+  
+  // Refresh contact data
+  const handleRefresh = () => {
+    dispatch(fetchContacts());
+    dispatch(fetchContactRequests());
+  };
   
   return (
     <ContactsContainer>
       <ContactsHeader>
         <HeaderLeft>
           <ContactsTitle>Contacts</ContactsTitle>
-          <ContactsDescription>Manage your contacts and connections</ContactsDescription>
+          <ContactsDescription>
+            Manage your contacts and requests
+            <RefreshButton 
+              variant="text" 
+              size="small" 
+              onClick={handleRefresh} 
+              startIcon={<FiRefreshCw />}
+              disabled={loading || requestLoading}
+            >
+              Refresh
+            </RefreshButton>
+          </ContactsDescription>
         </HeaderLeft>
         <Button 
           variant="contained" 
@@ -262,16 +406,17 @@ const Contacts = () => {
               <CardTitle>Add New Contact</CardTitle>
             </CardHeader>
             <CardContent>
-              {addStatus.success && (
+              {requestSuccess && (
                 <SuccessMessage>
-                  Contact added successfully!
+                  <FiUserCheck size={18} />
+                  <span>Contact request sent successfully!</span>
                 </SuccessMessage>
               )}
               
-              {(error || addStatus.error) && (
+              {requestError && (
                 <ErrorMessage>
                   <FiAlertCircle size={18} />
-                  <span>{error || addStatus.error}</span>
+                  <span>{requestError}</span>
                 </ErrorMessage>
               )}
               
@@ -281,37 +426,32 @@ const Contacts = () => {
                 value={newContactUsername}
                 onChange={(e) => {
                   setNewContactUsername(e.target.value);
-                  if (error) dispatch(clearError());
-                  if (addStatus.error) setAddStatus(prev => ({ ...prev, error: null }));
+                  if (requestError) dispatch(clearRequestError());
                 }}
                 fullWidth
-                error={!!error || !!addStatus.error}
+                error={!!requestError}
               />
               
               <HelpText>
                 Enter the exact username of the person you want to add to your contacts.
-                Make sure they already have a Murmur account.
+                The person will receive a contact request that they can accept or reject.
               </HelpText>
               
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
                 <Button
                   variant="outlined"
-                  onClick={() => {
-                    setShowAddForm(false);
-                    setAddStatus({ loading: false, error: null, success: false });
-                    dispatch(clearError());
-                  }}
+                  onClick={handleCloseAddForm}
                   style={{ marginRight: '12px' }}
                 >
                   Cancel
                 </Button>
                 <Button
                   variant="contained"
-                  onClick={handleAddContact}
-                  disabled={addStatus.loading || !newContactUsername.trim()}
+                  onClick={handleSendContactRequest}
+                  disabled={requestLoading || !newContactUsername.trim()}
                   startIcon={<FiUserPlus />}
                 >
-                  {addStatus.loading ? 'Adding...' : 'Add Contact'}
+                  {requestLoading ? 'Sending...' : 'Send Request'}
                 </Button>
               </div>
             </CardContent>
@@ -319,65 +459,172 @@ const Contacts = () => {
         </AddContactForm>
       )}
       
+      <TabsContainer>
+        <Tab 
+          active={activeTab === 'contacts'} 
+          onClick={() => handleTabChange('contacts')}
+        >
+          <FiUserCheck /> Contacts
+        </Tab>
+        <Tab 
+          active={activeTab === 'incoming'} 
+          onClick={() => handleTabChange('incoming')}
+        >
+          <FiUserPlus /> Incoming Requests
+          {incomingRequests.length > 0 && (
+            <TabBadge>{incomingRequests.length}</TabBadge>
+          )}
+        </Tab>
+        <Tab 
+          active={activeTab === 'outgoing'} 
+          onClick={() => handleTabChange('outgoing')}
+        >
+          <FiClock /> Outgoing Requests
+          {outgoingRequests.length > 0 && (
+            <TabBadge>{outgoingRequests.length}</TabBadge>
+          )}
+        </Tab>
+      </TabsContainer>
+      
       <SearchContainer>
         <TextField
           fullWidth
-          placeholder="Search contacts..."
+          placeholder={`Search ${activeTab}...`}
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           startAdornment={<FiSearch />}
         />
       </SearchContainer>
       
-      {loading ? (
+      {(loading || requestLoading) && filteredItems.length === 0 ? (
         <EmptyState>
-          <p>Loading contacts...</p>
+          <p>Loading...</p>
         </EmptyState>
-      ) : filteredContacts.length > 0 ? (
+      ) : filteredItems.length > 0 ? (
         <ContactsList>
-          {filteredContacts.map(contact => (
-            <ContactCard key={contact.id || Math.random()} elevation={1}>
+          {filteredItems.map(item => (
+            <ContactCard key={item.id} elevation={1}>
               <ContactInfo>
                 <Avatar 
-                  src={contact.avatar} 
-                  name={contact.displayName || contact.username} 
+                  src={item.avatar} 
+                  name={item.displayName || item.username} 
                 />
                 <ContactDetails>
-                  <ContactName>{contact.displayName || contact.username}</ContactName>
-                  <ContactStatus>
-                    {contact.status || 'Available'}
-                  </ContactStatus>
+                  <ContactName>{item.displayName || item.username}</ContactName>
+                  
+                  {activeTab === 'contacts' && (
+                    <ContactStatus accepted>
+                      <FiUserCheck /> Connected
+                    </ContactStatus>
+                  )}
+                  
+                  {activeTab === 'incoming' && (
+                    <ContactStatus pending>
+                      <FiUserPlus /> Wants to connect
+                    </ContactStatus>
+                  )}
+                  
+                  {activeTab === 'outgoing' && (
+                    <ContactStatus pending>
+                      <FiClock /> Pending acceptance
+                    </ContactStatus>
+                  )}
                 </ContactDetails>
               </ContactInfo>
+              
               <CardFooter>
-                <Button
-                  variant="outlined"
-                  startIcon={<FiMessageSquare />}
-                  onClick={() => handleOpenChat(contact)}
-                  fullWidth
-                >
-                  Message
-                </Button>
+                {activeTab === 'contacts' && (
+                  <Button
+                    variant="outlined"
+                    startIcon={<FiMessageSquare />}
+                    onClick={() => handleOpenChat(item)}
+                    fullWidth
+                  >
+                    Message
+                  </Button>
+                )}
+                
+                {activeTab === 'incoming' && (
+                  <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      startIcon={<FiUserX />}
+                      onClick={() => handleRejectRequest(item.id)}
+                      disabled={requestLoading}
+                      style={{ flex: 1 }}
+                    >
+                      Decline
+                    </Button>
+                    <Button
+                      variant="contained"
+                      startIcon={<FiUserCheck />}
+                      onClick={() => handleAcceptRequest(item.id)}
+                      disabled={requestLoading}
+                      style={{ flex: 1 }}
+                    >
+                      Accept
+                    </Button>
+                  </div>
+                )}
+                
+                {activeTab === 'outgoing' && (
+                  <div style={{ fontSize: '0.875rem', color: 'rgba(255,255,255,0.6)', textAlign: 'center', width: '100%' }}>
+                    Waiting for user to accept your request
+                  </div>
+                )}
               </CardFooter>
             </ContactCard>
           ))}
         </ContactsList>
       ) : (
         <EmptyState>
-          <FiUserPlus size={48} style={{ opacity: 0.5 }} />
-          <EmptyStateText>
-            {searchTerm ? 'No contacts matching your search' : 'You don\'t have any contacts yet'}
-          </EmptyStateText>
-          <Button
-            variant="contained"
-            onClick={() => {
-              setShowAddForm(true);
-              setSearchTerm('');
-            }}
-            startIcon={<FiPlus />}
-          >
-            Add Your First Contact
-          </Button>
+          {activeTab === 'contacts' && (
+            <>
+              <FiUserCheck size={48} style={{ opacity: 0.5 }} />
+              <EmptyStateText>
+                {searchTerm ? 'No contacts matching your search' : 'You don\'t have any contacts yet'}
+              </EmptyStateText>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  setShowAddForm(true);
+                  setSearchTerm('');
+                }}
+                startIcon={<FiPlus />}
+              >
+                Add Your First Contact
+              </Button>
+            </>
+          )}
+          
+          {activeTab === 'incoming' && (
+            <>
+              <FiUserPlus size={48} style={{ opacity: 0.5 }} />
+              <EmptyStateText>
+                {searchTerm ? 'No requests matching your search' : 'No pending contact requests'}
+              </EmptyStateText>
+            </>
+          )}
+          
+          {activeTab === 'outgoing' && (
+            <>
+              <FiClock size={48} style={{ opacity: 0.5 }} />
+              <EmptyStateText>
+                {searchTerm ? 'No requests matching your search' : 'You haven\'t sent any contact requests'}
+              </EmptyStateText>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  setShowAddForm(true);
+                  setSearchTerm('');
+                }}
+                startIcon={<FiPlus />}
+              >
+                Send a Contact Request
+              </Button>
+            </>
+          )}
         </EmptyState>
       )}
     </ContactsContainer>

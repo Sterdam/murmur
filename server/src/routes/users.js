@@ -1,10 +1,15 @@
+// server/src/routes/users.js
 const express = require('express');
 const { 
   getUserProfile, 
   updateUserProfile, 
   searchUsers, 
   addContact, 
-  getContacts 
+  getContacts,
+  sendContactRequest,
+  getContactRequests,
+  acceptContactRequest,
+  rejectContactRequest
 } = require('../controllers/users');
 const authMiddleware = require('../middleware/auth');
 const geoRestriction = require('../middleware/geoRestriction');
@@ -32,10 +37,14 @@ router.put('/keys', sensitiveRouteGeoRestriction, updateUserProfile);
 // Search for users
 router.get('/search', searchUsers);
 
-// Add a contact
+// Contact management
 router.post('/contacts', addContact);
-
-// Get user contacts
 router.get('/contacts', getContacts);
+
+// Contact request management
+router.post('/contact-requests', sendContactRequest);
+router.get('/contact-requests', getContactRequests);
+router.post('/contact-requests/:requestId/accept', acceptContactRequest);
+router.post('/contact-requests/:requestId/reject', rejectContactRequest);
 
 module.exports = router;

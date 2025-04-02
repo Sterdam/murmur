@@ -1,11 +1,11 @@
-// client/src/store/slices/contactsSlice.js - Corrigé
+// client/src/store/slices/contactsSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 
 // Async thunks
 export const fetchContacts = createAsyncThunk(
   'contacts/fetchContacts',
-  async (_, { rejectWithValue, getState }) => {
+  async (_, { rejectWithValue }) => {
     try {
       const response = await api.get('/users/contacts');
       return response.data.data;
@@ -19,49 +19,30 @@ export const fetchContacts = createAsyncThunk(
   }
 );
 
-export const addContact = createAsyncThunk(
-  'contacts/addContact',
-  async (username, { rejectWithValue, getState }) => {
+export const fetchContactRequests = createAsyncThunk(
+  'contacts/fetchContactRequests',
+  async (_, { rejectWithValue }) => {
     try {
-      // Ajouter d'abord le contact
-      const response = await api.post('/users/contacts', { username });
-      
-      // Si le contact a été ajouté avec succès
-      if (response.data && response.data.success) {
-        if (response.data.data) {
-          return response.data.data;
-        }
-        
-        // Si les données du contact ne sont pas dans la réponse, rechercher l'utilisateur
-        try {
-          const searchResponse = await api.get(`/users/search?username=${username}`);
-          
-          if (searchResponse.data.data && searchResponse.data.data.length > 0) {
-            return searchResponse.data.data[0];
-          }
-          
-          // Si aucun utilisateur n'est trouvé, retourner un objet avec les informations de base
-          return {
-            id: `temp-${Date.now()}`,
-            username: username,
-            displayName: username,
-            status: 'Pending'
-          };
-        } catch (searchError) {
-          console.warn('User search failed after adding contact:', searchError);
-          // Retourner quand même un contact temporaire pour une expérience utilisateur harmonieuse
-          return {
-            id: `temp-${Date.now()}`,
-            username: username,
-            displayName: username,
-            status: 'Pending'
-          };
-        }
-      }
-      
-      throw new Error('Failed to add contact');
+      const response = await api.get('/users/contact-requests');
+      return response.data.data;
     } catch (error) {
-      console.error('Error adding contact:', error);
+      console.error('Error fetching contact requests:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        'Failed to fetch contact requests.'
+      );
+    }
+  }
+);
+
+export const sendContactRequest = createAsyncThunk(
+  'contacts/sendContactRequest',
+  async (username, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/users/contact-requests', { username });
+      return response.data.data;
+    } catch (error) {
+      console.error('Error sending contact request:', error);
       
       if (error.response && error.response.status === 404) {
         return rejectWithValue('User not found. Please check the username and try again.');
@@ -70,7 +51,39 @@ export const addContact = createAsyncThunk(
       return rejectWithValue(
         error.response?.data?.message || 
         error.message || 
-        'Failed to add contact. Please try again later.'
+        'Failed to send contact request. Please try again later.'
+      );
+    }
+  }
+);
+
+export const acceptContactRequest = createAsyncThunk(
+  'contacts/acceptContactRequest',
+  async (requestId, { rejectWithValue }) => {
+    try {
+      const response = await api.post(`/users/contact-requests/${requestId}/accept`);
+      return response.data.data;
+    } catch (error) {
+      console.error('Error accepting contact request:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        'Failed to accept contact request.'
+      );
+    }
+  }
+);
+
+export const rejectContactRequest = createAsyncThunk(
+  'contacts/rejectContactRequest',
+  async (requestId, { rejectWithValue }) => {
+    try {
+      const response = await api.post(`/users/contact-requests/${requestId}/reject`);
+      return response.data.data;
+    } catch (error) {
+      console.error('Error rejecting contact request:', error);
+      return rejectWithValue(
+        error.response?.data?.message || 
+        'Failed to reject contact request.'
       );
     }
   }
@@ -78,7 +91,7 @@ export const addContact = createAsyncThunk(
 
 export const searchUsers = createAsyncThunk(
   'contacts/searchUsers',
-  async (username, { rejectWithValue, getState }) => {
+  async (username, { rejectWithValue }) => {
     try {
       const response = await api.get(`/users/search?username=${username}`);
       return response.data.data;
@@ -94,10 +107,16 @@ export const searchUsers = createAsyncThunk(
 
 const initialState = {
   contacts: [],
+  incomingRequests: [],
+  outgoingRequests: [],
   searchResults: [],
   loading: false,
+  requestLoading: false,
   searchLoading: false,
   error: null,
+  requestError: null,
+  searchError: null,
+  requestSuccess: false
 };
 
 const contactsSlice = createSlice({
@@ -107,10 +126,22 @@ const contactsSlice = createSlice({
     clearSearchResults: (state) => {
       state.searchResults = [];
       state.searchLoading = false;
+      state.searchError = null;
     },
-    clearError: (state) => {
+    clearContactError: (state) => {
       state.error = null;
     },
+    clearRequestError: (state) => {
+      state.requestError = null;
+    },
+    clearRequestSuccess: (state) => {
+      state.requestSuccess = false;
+    },
+    clearAllErrors: (state) => {
+      state.error = null;
+      state.requestError = null;
+      state.searchError = null;
+    }
   },
   extraReducers: (builder) => {
     builder
@@ -121,53 +152,110 @@ const contactsSlice = createSlice({
       })
       .addCase(fetchContacts.fulfilled, (state, action) => {
         state.loading = false;
-        // S'assurer que action.payload est un tableau
         state.contacts = Array.isArray(action.payload) ? action.payload : [];
       })
       .addCase(fetchContacts.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload || 'Failed to fetch contacts';
       })
-      // Add Contact
-      .addCase(addContact.pending, (state) => {
-        state.loading = true;
-        state.error = null;
+      
+      // Fetch Contact Requests
+      .addCase(fetchContactRequests.pending, (state) => {
+        state.requestLoading = true;
+        state.requestError = null;
       })
-      .addCase(addContact.fulfilled, (state, action) => {
-        state.loading = false;
+      .addCase(fetchContactRequests.fulfilled, (state, action) => {
+        state.requestLoading = false;
         if (action.payload) {
-          // Vérifier si le contact existe déjà
-          const contactExists = state.contacts.some(
-            (contact) => contact.id === action.payload.id || 
-                         contact.username === action.payload.username
-          );
-          
-          if (!contactExists) {
-            state.contacts.push(action.payload);
-          }
+          state.incomingRequests = action.payload.incoming || [];
+          state.outgoingRequests = action.payload.outgoing || [];
         }
       })
-      .addCase(addContact.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload || 'Failed to add contact';
+      .addCase(fetchContactRequests.rejected, (state, action) => {
+        state.requestLoading = false;
+        state.requestError = action.payload || 'Failed to fetch contact requests';
       })
+      
+      // Send Contact Request
+      .addCase(sendContactRequest.pending, (state) => {
+        state.requestLoading = true;
+        state.requestError = null;
+        state.requestSuccess = false;
+      })
+      .addCase(sendContactRequest.fulfilled, (state, action) => {
+        state.requestLoading = false;
+        state.requestSuccess = true;
+        if (action.payload) {
+          state.outgoingRequests.push(action.payload);
+        }
+      })
+      .addCase(sendContactRequest.rejected, (state, action) => {
+        state.requestLoading = false;
+        state.requestError = action.payload || 'Failed to send contact request';
+        state.requestSuccess = false;
+      })
+      
+      // Accept Contact Request
+      .addCase(acceptContactRequest.pending, (state) => {
+        state.requestLoading = true;
+        state.requestError = null;
+      })
+      .addCase(acceptContactRequest.fulfilled, (state, action) => {
+        state.requestLoading = false;
+        if (action.payload) {
+          // Add to contacts
+          state.contacts.push(action.payload);
+          
+          // Remove from incoming requests
+          state.incomingRequests = state.incomingRequests.filter(
+            request => request.id !== action.meta.arg
+          );
+        }
+      })
+      .addCase(acceptContactRequest.rejected, (state, action) => {
+        state.requestLoading = false;
+        state.requestError = action.payload || 'Failed to accept contact request';
+      })
+      
+      // Reject Contact Request
+      .addCase(rejectContactRequest.pending, (state) => {
+        state.requestLoading = true;
+        state.requestError = null;
+      })
+      .addCase(rejectContactRequest.fulfilled, (state, action) => {
+        state.requestLoading = false;
+        // Remove from incoming requests
+        state.incomingRequests = state.incomingRequests.filter(
+          request => request.id !== action.meta.arg
+        );
+      })
+      .addCase(rejectContactRequest.rejected, (state, action) => {
+        state.requestLoading = false;
+        state.requestError = action.payload || 'Failed to reject contact request';
+      })
+      
       // Search Users
       .addCase(searchUsers.pending, (state) => {
         state.searchLoading = true;
-        state.error = null;
+        state.searchError = null;
       })
       .addCase(searchUsers.fulfilled, (state, action) => {
         state.searchLoading = false;
-        // S'assurer que action.payload est un tableau
         state.searchResults = Array.isArray(action.payload) ? action.payload : [];
       })
       .addCase(searchUsers.rejected, (state, action) => {
         state.searchLoading = false;
-        state.error = action.payload || 'User search failed';
+        state.searchError = action.payload || 'User search failed';
       });
   },
 });
 
-export const { clearSearchResults, clearError } = contactsSlice.actions;
+export const { 
+  clearSearchResults, 
+  clearContactError, 
+  clearRequestError,
+  clearRequestSuccess,
+  clearAllErrors
+} = contactsSlice.actions;
 
 export default contactsSlice.reducer;
