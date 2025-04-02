@@ -1,4 +1,4 @@
-// client/src/pages/Contacts.js
+// client/src/pages/Contacts.js - Version complète
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
@@ -34,6 +34,7 @@ import {
 } from '../store/slices/contactsSlice';
 import { setActiveConversation } from '../store/slices/messagesSlice';
 
+// Styles
 const ContactsContainer = styled.div`
   max-width: 1000px;
   margin: 0 auto;
@@ -45,6 +46,12 @@ const ContactsHeader = styled.div`
   align-items: center;
   justify-content: space-between;
   margin-bottom: 24px;
+  
+  @media (max-width: 600px) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
 `;
 
 const HeaderLeft = styled.div``;
@@ -60,6 +67,8 @@ const ContactsDescription = styled.p`
   ${({ theme }) => theme.typography.body2};
   color: ${({ theme }) => theme.colors.textSecondary};
   margin: 0;
+  display: flex;
+  align-items: center;
 `;
 
 const TabsContainer = styled.div`
@@ -67,6 +76,19 @@ const TabsContainer = styled.div`
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   margin-bottom: 24px;
   overflow-x: auto;
+  
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+  
+  &::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+  }
+  
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+  }
 `;
 
 const Tab = styled.button`
@@ -122,10 +144,11 @@ const ContactsList = styled.div`
 
 const ContactCard = styled(Card)`
   cursor: pointer;
-  transition: transform 0.2s;
+  transition: transform 0.2s, box-shadow 0.2s;
   
   &:hover {
     transform: translateY(-2px);
+    box-shadow: ${({ theme }) => theme.elevation[4]};
   }
 `;
 
@@ -138,25 +161,29 @@ const ContactInfo = styled.div`
 const ContactDetails = styled.div`
   margin-left: 16px;
   flex: 1;
+  overflow: hidden;
 `;
 
 const ContactName = styled.h3`
   ${({ theme }) => theme.typography.subtitle1};
   margin: 0;
   margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 `;
 
 const ContactStatus = styled.p`
-  ${({ theme }) => theme.typography.body2};
-  color: ${({ theme, pending, accepted, rejected }) => {
-    if (pending) return theme.colors.secondary;
-    if (accepted) return '#4caf50';
-    if (rejected) return theme.colors.error;
-    return theme.colors.textSecondary;
+  ${({ theme, pending, accepted, rejected }) => {
+    if (pending) return `color: ${theme.colors.secondary};`;
+    if (accepted) return `color: #4caf50;`;
+    if (rejected) return `color: ${theme.colors.error};`;
+    return `color: ${theme.colors.textSecondary};`;
   }};
   margin: 0;
   display: flex;
   align-items: center;
+  font-size: 0.875rem;
   
   svg {
     margin-right: 4px;
@@ -193,7 +220,7 @@ const EmptyStateText = styled.p`
 const SuccessMessage = styled.div`
   background-color: rgba(76, 175, 80, 0.1);
   color: #4caf50;
-  padding: 10px;
+  padding: 10px 16px;
   border-radius: 4px;
   margin-bottom: 16px;
   display: flex;
@@ -201,6 +228,7 @@ const SuccessMessage = styled.div`
   
   svg {
     margin-right: 8px;
+    flex-shrink: 0;
   }
 `;
 
@@ -225,10 +253,40 @@ const HelpText = styled.div`
   border-radius: 4px;
   background-color: rgba(255, 255, 255, 0.05);
   font-size: 0.875rem;
+  color: ${({ theme }) => theme.colors.textSecondary};
 `;
 
 const RefreshButton = styled(Button)`
   margin-left: 10px;
+`;
+
+const LoadingIndicator = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: ${({ theme }) => theme.colors.primary};
+  
+  svg {
+    animation: spin 1s linear infinite;
+    margin-right: 8px;
+  }
+  
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+`;
+
+const DebugInfo = styled.div`
+  margin-top: 16px;
+  padding: 8px;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.3);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: monospace;
+  white-space: pre-wrap;
+  display: ${({ visible }) => visible ? 'block' : 'none'};
 `;
 
 const Contacts = () => {
@@ -253,72 +311,143 @@ const Contacts = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [newContactUsername, setNewContactUsername] = useState('');
+  const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(Date.now());
   
-  // Load contacts and requests when the component mounts
+  // Charger les contacts et les demandes au chargement initial ET toutes les 30 secondes
   useEffect(() => {
-    dispatch(fetchContacts());
-    dispatch(fetchContactRequests());
+    // Chargement initial
+    loadContactData();
+    
+    // Rafraîchissement automatique toutes les 30 secondes
+    const intervalId = setInterval(() => {
+      loadContactData(false); // false = ne pas afficher le loading
+    }, 30000);
+    
+    // Nettoyage lors du démontage du composant
+    return () => {
+      clearInterval(intervalId);
+      // Nettoyer les erreurs et les notifications de succès
+      dispatch(clearContactError());
+      dispatch(clearRequestError());
+      dispatch(clearRequestSuccess());
+    };
   }, [dispatch]);
   
-  // Get filtered contacts based on search term
+  // Charger l'onglet des demandes entrantes par défaut s'il y en a
+  useEffect(() => {
+    if (incomingRequests && incomingRequests.length > 0 && activeTab === 'contacts') {
+      setActiveTab('incoming');
+    }
+  }, [incomingRequests, activeTab]);
+  
+  const loadContactData = (showLoading = true) => {
+    if (showLoading) {
+      // Si nous voulons afficher l'indicateur de chargement
+      dispatch(fetchContacts());
+      dispatch(fetchContactRequests());
+    } else {
+      // Chargement silencieux
+      dispatch(fetchContacts()).catch(err => console.error('Error refreshing contacts:', err));
+      dispatch(fetchContactRequests()).catch(err => console.error('Error refreshing requests:', err));
+    }
+    setLastRefresh(Date.now());
+  };
+  
+  // Obtenir les éléments filtrés en fonction du terme de recherche
   const getFilteredItems = () => {
     let itemsToFilter = [];
     
     if (activeTab === 'contacts') {
-      itemsToFilter = contacts;
+      itemsToFilter = contacts || [];
     } else if (activeTab === 'incoming') {
-      itemsToFilter = incomingRequests;
+      itemsToFilter = incomingRequests || [];
     } else if (activeTab === 'outgoing') {
-      itemsToFilter = outgoingRequests;
+      itemsToFilter = outgoingRequests || [];
     }
     
-    return itemsToFilter.filter(item => 
-      item.username?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (item.displayName && item.displayName.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
+    // Vérifier si itemsToFilter est un tableau
+    if (!Array.isArray(itemsToFilter)) {
+      console.error(`Items to filter is not an array:`, itemsToFilter);
+      return [];
+    }
+    
+    return itemsToFilter.filter(item => {
+      if (!item) return false;
+      
+      const searchFields = [];
+      
+      // Ajouter les champs qui peuvent être recherchés
+      if (item.username) searchFields.push(item.username.toLowerCase());
+      if (item.displayName) searchFields.push(item.displayName.toLowerCase());
+      if (item.senderUsername) searchFields.push(item.senderUsername.toLowerCase());
+      if (item.recipientUsername) searchFields.push(item.recipientUsername.toLowerCase());
+      
+      // Si aucun champ de recherche n'est disponible, ne pas filtrer cet élément
+      if (searchFields.length === 0) return true;
+      
+      // Vérifier si l'un des champs contient le terme de recherche
+      return searchFields.some(field => field.includes(searchTerm.toLowerCase()));
+    });
   };
   
   const filteredItems = getFilteredItems();
   
-  // Handle sending a contact request
+  // Handler pour l'envoi d'une demande de contact
   const handleSendContactRequest = async () => {
     if (!newContactUsername.trim()) return;
     
     try {
       await dispatch(sendContactRequest(newContactUsername.trim())).unwrap();
-      setNewContactUsername('');
       
-      // Don't auto-hide the form in case user wants to add more contacts
+      // Ne pas effacer le champ pour permettre d'envoyer plusieurs demandes
+      // setNewContactUsername('');
+      
+      // Rafraîchir les données après l'envoi
+      setTimeout(() => {
+        loadContactData();
+      }, 1000); // Petit délai pour laisser le serveur traiter la demande
     } catch (error) {
       console.error('Failed to send contact request:', error);
     }
   };
   
-  // Handle accepting a contact request
+  // Handler pour accepter une demande de contact
   const handleAcceptRequest = async (requestId) => {
     try {
       await dispatch(acceptContactRequest(requestId)).unwrap();
-      // Automatically refresh contacts after accepting
-      dispatch(fetchContacts());
+      
+      // Rafraîchir immédiatement pour mettre à jour l'interface
+      setTimeout(() => {
+        loadContactData();
+      }, 500); // Petit délai pour laisser le serveur traiter la demande
     } catch (error) {
       console.error('Failed to accept contact request:', error);
     }
   };
   
-  // Handle rejecting a contact request
+  // Handler pour rejeter une demande de contact
   const handleRejectRequest = async (requestId) => {
     try {
       await dispatch(rejectContactRequest(requestId)).unwrap();
+      
+      // Rafraîchir immédiatement pour mettre à jour l'interface
+      setTimeout(() => {
+        loadContactData();
+      }, 500); // Petit délai pour laisser le serveur traiter la demande
     } catch (error) {
       console.error('Failed to reject contact request:', error);
     }
   };
   
-  // Handle opening chat with a contact
+  // Handler pour ouvrir une conversation avec un contact
   const handleOpenChat = (contact) => {
-    if (!contact || !contact.id) return;
+    if (!contact || !contact.id) {
+      console.error('Invalid contact or missing ID', contact);
+      return;
+    }
     
-    // Create conversation ID by sorting the IDs alphabetically
+    // Créer l'ID de conversation en triant les IDs par ordre alphabétique
     if (!user || !user.id) {
       console.error('User data not available');
       return;
@@ -326,20 +455,20 @@ const Contacts = () => {
     
     const conversationId = [user.id, contact.id].sort().join(':');
     
-    // Set active conversation
+    // Définir la conversation active
     dispatch(setActiveConversation(conversationId));
     
-    // Navigate to chat
+    // Naviguer vers la page de chat
     navigate(`/chat/${conversationId}`);
   };
   
-  // Handle changing the active tab
+  // Handler pour changer l'onglet actif
   const handleTabChange = (tab) => {
     setActiveTab(tab);
-    setSearchTerm(''); // Clear search when changing tabs
+    setSearchTerm(''); // Effacer la recherche lors d'un changement d'onglet
   };
   
-  // Handle closing the add contact form
+  // Handler pour fermer le formulaire d'ajout
   const handleCloseAddForm = () => {
     setShowAddForm(false);
     setNewContactUsername('');
@@ -347,29 +476,20 @@ const Contacts = () => {
     dispatch(clearRequestSuccess());
   };
   
-  // Clear any errors when unmounting the component
-  useEffect(() => {
-    return () => {
-      dispatch(clearContactError());
-      dispatch(clearRequestError());
-    };
-  }, [dispatch]);
-  
-  // Clear success message after a delay
-  useEffect(() => {
-    if (requestSuccess) {
-      const timer = setTimeout(() => {
-        dispatch(clearRequestSuccess());
-      }, 5000);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [requestSuccess, dispatch]);
-  
-  // Refresh contact data
+  // Rafraîchir manuellement les données de contact
   const handleRefresh = () => {
-    dispatch(fetchContacts());
-    dispatch(fetchContactRequests());
+    loadContactData(true);
+  };
+  
+  // Toggle pour afficher les informations de débogage
+  const toggleDebugInfo = () => {
+    setShowDebugInfo(!showDebugInfo);
+  };
+  
+  // Format de la date de dernier rafraîchissement
+  const formatRefreshTime = () => {
+    const date = new Date(lastRefresh);
+    return date.toLocaleTimeString();
   };
   
   return (
@@ -383,11 +503,17 @@ const Contacts = () => {
               variant="text" 
               size="small" 
               onClick={handleRefresh} 
-              startIcon={<FiRefreshCw />}
+              startIcon={loading || requestLoading ? 
+                <FiRefreshCw style={{ animation: 'spin 1s linear infinite' }} /> : 
+                <FiRefreshCw />
+              }
               disabled={loading || requestLoading}
             >
-              Refresh
+              {loading || requestLoading ? 'Refreshing...' : 'Refresh'}
             </RefreshButton>
+            <span style={{ fontSize: '0.75rem', marginLeft: '8px', opacity: 0.6 }}>
+              Last: {formatRefreshTime()}
+            </span>
           </ContactsDescription>
         </HeaderLeft>
         <Button 
@@ -465,13 +591,14 @@ const Contacts = () => {
           onClick={() => handleTabChange('contacts')}
         >
           <FiUserCheck /> Contacts
+          <TabBadge>{contacts?.length || 0}</TabBadge>
         </Tab>
         <Tab 
           active={activeTab === 'incoming'} 
           onClick={() => handleTabChange('incoming')}
         >
           <FiUserPlus /> Incoming Requests
-          {incomingRequests.length > 0 && (
+          {incomingRequests && incomingRequests.length > 0 && (
             <TabBadge>{incomingRequests.length}</TabBadge>
           )}
         </Tab>
@@ -480,9 +607,16 @@ const Contacts = () => {
           onClick={() => handleTabChange('outgoing')}
         >
           <FiClock /> Outgoing Requests
-          {outgoingRequests.length > 0 && (
+          {outgoingRequests && outgoingRequests.length > 0 && (
             <TabBadge>{outgoingRequests.length}</TabBadge>
           )}
+        </Tab>
+        <Tab 
+          active={false} 
+          onClick={toggleDebugInfo}
+          style={{ marginLeft: 'auto', opacity: 0.5, fontSize: '0.75rem', padding: '4px 8px' }}
+        >
+          Debug
         </Tab>
       </TabsContainer>
       
@@ -496,9 +630,25 @@ const Contacts = () => {
         />
       </SearchContainer>
       
+      {/* Debug information */}
+      <DebugInfo visible={showDebugInfo}>
+        <div>Last refresh: {new Date(lastRefresh).toLocaleString()}</div>
+        <div>Contacts: {JSON.stringify(contacts?.length || 0)}</div>
+        <div>Incoming requests: {JSON.stringify(incomingRequests?.length || 0)}</div>
+        <div>Outgoing requests: {JSON.stringify(outgoingRequests?.length || 0)}</div>
+        <div>Loading: {JSON.stringify(loading)}</div>
+        <div>Request loading: {JSON.stringify(requestLoading)}</div>
+        <div>Error: {JSON.stringify(error)}</div>
+        <div>Request error: {JSON.stringify(requestError)}</div>
+        <div>First incoming request: {JSON.stringify(incomingRequests?.[0] || null)}</div>
+      </DebugInfo>
+      
       {(loading || requestLoading) && filteredItems.length === 0 ? (
         <EmptyState>
-          <p>Loading...</p>
+          <LoadingIndicator>
+            <FiRefreshCw size={24} />
+            <p>Loading...</p>
+          </LoadingIndicator>
         </EmptyState>
       ) : filteredItems.length > 0 ? (
         <ContactsList>
@@ -506,11 +656,21 @@ const Contacts = () => {
             <ContactCard key={item.id} elevation={1}>
               <ContactInfo>
                 <Avatar 
+                  // Utiliser différentes propriétés selon le type de demande
                   src={item.avatar} 
-                  name={item.displayName || item.username} 
+                  name={
+                    activeTab === 'incoming' 
+                      ? item.senderUsername || item.username
+                      : item.displayName || item.username
+                  }
                 />
                 <ContactDetails>
-                  <ContactName>{item.displayName || item.username}</ContactName>
+                  <ContactName>
+                    {activeTab === 'incoming' 
+                      ? item.senderUsername || item.username
+                      : item.displayName || item.username
+                    }
+                  </ContactName>
                   
                   {activeTab === 'contacts' && (
                     <ContactStatus accepted>

@@ -24,6 +24,15 @@ export const fetchContactRequests = createAsyncThunk(
   async (_, { rejectWithValue }) => {
     try {
       const response = await api.get('/users/contact-requests');
+      
+      // Ajouter un log pour déboguer
+      console.log("Contact requests response:", response.data);
+      
+      // S'assurer que le format est correct
+      if (!response.data.data) {
+        throw new Error('Format de réponse invalide pour les demandes de contact');
+      }
+      
       return response.data.data;
     } catch (error) {
       console.error('Error fetching contact requests:', error);
