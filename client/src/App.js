@@ -6,6 +6,7 @@ import socketService from './services/socket';
 import { getEncryptionKeys } from './utils/storage';
 import { setKeys } from './store/slices/authSlice';
 import { addMessage, updateMessageStatus } from './store/slices/messagesSlice';
+import { decryptMessage } from './services/encryption';
 
 // Components
 import PrivateRoute from './components/routing/PrivateRoute';

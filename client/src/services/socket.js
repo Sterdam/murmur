@@ -1,10 +1,28 @@
 // client/src/services/socket.js
 import { io } from 'socket.io-client';
-import { addMessage, updateMessageStatus } from '../store/slices/messagesSlice';
 import envConfig from '../config/env';
 
 // Singleton pour le socket
 let socket = null;
+
+// Fonction utilitaire pour normaliser les IDs de conversation
+const normalizeConversationId = (id) => {
+  if (!id) return id;
+  
+  // Si c'est un ID de groupe, le laisser tel quel
+  if (id.startsWith('group:')) return id;
+  
+  // Si c'est un ID de conversation directe au format "id1:id2", tri des IDs
+  if (id.includes(':')) {
+    const parts = id.split(':');
+    if (parts.length === 2) {
+      return parts.sort().join(':');
+    }
+  }
+  
+  // Format inconnu (UUID, etc.), retourner tel quel
+  return id;
+};
 
 // Version simplifiée sans dépendance au store directement
 const socketService = {
@@ -22,13 +40,15 @@ const socketService = {
       }
 
       // Détermination de l'URL du socket basée sur l'environnement
-      const socketUrl = process.env.REACT_APP_SOCKET_URL || envConfig.socketUrl;
-      console.log(`Connecting to socket server: ${socketUrl}`);
+      const socketUrl = process.env.REACT_APP_SOCKET_URL || envConfig.socketUrl || 'http://localhost:5000';
+      const socketPath = envConfig.socketPath || '/socket.io';
+      
+      console.log(`Connecting to socket server: ${socketUrl}, path: ${socketPath}`);
 
       // Création de la connexion socket
       socket = io(socketUrl, {
         auth: { token },
-        path: envConfig.socketPath,
+        path: socketPath,
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: Infinity,
@@ -97,27 +117,35 @@ const socketService = {
     if (messageHandler) {
       socket.on('private-message', (data) => {
         console.log('Socket received private message:', data);
-        messageHandler(data);
+        if (data && messageHandler) {
+          messageHandler(data);
+        }
       });
     }
     
     if (groupMessageHandler) {
       socket.on('group-message', (data) => {
         console.log('Socket received group message:', data);
-        groupMessageHandler(data);
+        if (data && groupMessageHandler) {
+          groupMessageHandler(data);
+        }
       });
     }
     
     if (deliveryHandler) {
       socket.on('message-delivered', (data) => {
         console.log('Socket received delivery confirmation:', data);
-        deliveryHandler(data);
+        if (data && deliveryHandler) {
+          deliveryHandler(data);
+        }
       });
     }
     
     if (typingHandler) {
       socket.on('typing', (data) => {
-        typingHandler(data);
+        if (data && typingHandler) {
+          typingHandler(data);
+        }
       });
     }
 
@@ -126,8 +154,8 @@ const socketService = {
 
   // Joindre un groupe de discussion
   joinGroup: (groupId) => {
-    if (!socket || !socket.connected) {
-      console.error('Socket not connected, cannot join group');
+    if (!socket || !socket.connected || !groupId) {
+      console.error('Socket not connected or groupId missing, cannot join group');
       return false;
     }
 
@@ -137,8 +165,8 @@ const socketService = {
 
   // Quitter un groupe de discussion
   leaveGroup: (groupId) => {
-    if (!socket || !socket.connected) {
-      console.error('Socket not connected, cannot leave group');
+    if (!socket || !socket.connected || !groupId) {
+      console.error('Socket not connected or groupId missing, cannot leave group');
       return false;
     }
 
@@ -150,6 +178,11 @@ const socketService = {
   sendPrivateMessage: (messageData) => {
     if (!socket || !socket.connected) {
       console.error('Socket not connected, cannot send private message');
+      return false;
+    }
+    
+    if (!messageData || !messageData.recipientId) {
+      console.error('Invalid message data for private message:', messageData);
       return false;
     }
 
@@ -171,6 +204,11 @@ const socketService = {
       console.error('Socket not connected, cannot send group message');
       return false;
     }
+    
+    if (!messageData || !messageData.groupId) {
+      console.error('Invalid message data for group message:', messageData);
+      return false;
+    }
 
     console.log('Emitting group message via socket:', messageData);
     
@@ -186,11 +224,17 @@ const socketService = {
 
   // Envoi d'un indicateur de frappe
   sendTypingIndicator: (data) => {
-    if (!socket || !socket.connected) {
+    if (!socket || !socket.connected || !data || !data.conversationId) {
       return false;
     }
+    
+    // Normaliser l'ID de conversation
+    const normalizedData = {
+      ...data,
+      conversationId: normalizeConversationId(data.conversationId)
+    };
 
-    socket.emit('typing', data);
+    socket.emit('typing', normalizedData);
     return true;
   },
 

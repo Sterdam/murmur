@@ -15,15 +15,26 @@ export const fetchConversationMessages = createAsyncThunk(
       // Vérifier si on a déjà des messages pour cette conversation
       const existingMessages = getState().messages.conversations[conversationId] || [];
       
+      // Normaliser l'ID de conversation pour s'assurer qu'il est bien formaté
+      let normalizedId = conversationId;
+      
+      // Si c'est un ID direct (format userId:userId), trier les IDs
+      if (!conversationId.startsWith('group:') && conversationId.includes(':')) {
+        const parts = conversationId.split(':');
+        if (parts.length === 2) {
+          normalizedId = parts.sort().join(':');
+        }
+      }
+      
       try {
-        const response = await api.get(`/messages/${conversationId}`, {
+        const response = await api.get(`/messages/${normalizedId}`, {
           headers: {
             Authorization: `Bearer ${getState().auth.token}`,
           },
         });
         
         const messages = response.data.data || [];
-        console.log(`Received ${messages.length} messages from API for conversation: ${conversationId}`);
+        console.log(`Received ${messages.length} messages from API for conversation: ${normalizedId}`);
         
         const currentUser = getState().auth.user;
         const privateKey = getState().auth.privateKey;
@@ -81,7 +92,7 @@ export const fetchConversationMessages = createAsyncThunk(
         // Filtrer les messages nuls ou indéfinis
         const validMessages = decryptedMessages.filter(msg => msg !== null);
         
-        console.log(`Successfully processed ${validMessages.length} messages for conversation: ${conversationId}`);
+        console.log(`Successfully processed ${validMessages.length} messages for conversation: ${normalizedId}`);
         
         return {
           conversationId,
@@ -97,15 +108,10 @@ export const fetchConversationMessages = createAsyncThunk(
           };
         }
         
-        // En cas d'erreur 403 (accès refusé), il peut s'agir d'un problème d'autorisation 
-        // ou d'un format de conversationId incorrect
+        // En cas d'erreur 403 (accès refusé), gérer spécifiquement cette erreur
         if (error.response?.status === 403) {
-          console.error(`Unauthorized access to conversation: ${conversationId}`);
-          // Retourner un tableau vide au lieu de rejeter, pour éviter les erreurs en cascade
-          return {
-            conversationId,
-            messages: [],
-          };
+          console.error(`Unauthorized access to conversation: ${normalizedId}`);
+          return rejectWithValue('Unauthorized access to conversation');
         }
         
         throw error;

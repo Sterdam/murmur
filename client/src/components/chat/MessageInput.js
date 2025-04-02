@@ -103,8 +103,30 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const dispatch = useDispatch();
   const { contacts } = useSelector((state) => state.contacts);
   
+  // Fonction pour normaliser les IDs de conversation
+  const normalizeConversationId = (id) => {
+    if (!id) return id;
+    
+    // Si c'est un ID de groupe, le laisser tel quel
+    if (id.startsWith('group:')) return id;
+    
+    // Si c'est un ID direct, trier les parties
+    if (id.includes(':')) {
+      const parts = id.split(':');
+      if (parts.length === 2) {
+        return parts.sort().join(':');
+      }
+    }
+    
+    // Format inconnu, retourner tel quel
+    return id;
+  };
+  
+  // Normaliser l'ID de conversation
+  const normalizedConversationId = conversationId ? normalizeConversationId(conversationId) : null;
+  
   // Find the recipient in contacts to check public key
-  const recipient = contacts.find(contact => contact.id === recipientId);
+  const recipient = recipientId ? contacts.find(contact => contact.id === recipientId) : null;
   const hasPublicKey = recipient && recipient.publicKey;
   
   // Clear error when messageInput changes or unmounts
@@ -116,7 +138,13 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
     e.preventDefault();
     
     // Validate message
-    if (message.trim() === '' || sending) return;
+    if (!message.trim() || sending) return;
+    
+    // Vérifications supplémentaires
+    if (!recipientId && !groupId) {
+      setError("Impossible d'envoyer le message : destinataire non spécifié.");
+      return;
+    }
     
     // Check if recipient public key is available for direct messages
     if (recipientId && !hasPublicKey) {
@@ -133,6 +161,7 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
         message: message.trim(),
         recipientId,
         groupId,
+        conversationId: normalizedConversationId
       })).unwrap();
       
       // Clear input
@@ -141,10 +170,12 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
       console.error('Failed to send message:', error);
       
       // Handle specific errors
-      if (error.includes && error.includes('public key')) {
+      if (typeof error === 'string' && error.includes && error.includes('public key')) {
         setError('Cannot send message securely. Make sure you are connected with this contact before exchanging messages.');
+      } else if (error && error.message) {
+        setError(error.message);
       } else {
-        setError(error.message || 'Failed to send message. Please try again.');
+        setError('Failed to send message. Please try again.');
       }
     } finally {
       setSending(false);
@@ -158,6 +189,14 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
       handleSubmit(e);
     }
   };
+  
+  // Placeholder text based on state
+  const getPlaceholderText = () => {
+    if (!conversationId) return "Chargement de la conversation...";
+    if (!hasPublicKey && recipientId) return "Vous devez être connecté avec ce contact avant de pouvoir échanger des messages";
+    if (sending) return "Envoi en cours...";
+    return "Tapez un message...";
+  };
 
   return (
     <InputContainer>
@@ -170,16 +209,16 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
         )}
         
         <InputRow>
-          <IconButton type="button" title="Attach file" disabled={!hasPublicKey && recipientId}>
+          <IconButton
+            type="button"
+            title="Attach file"
+            disabled={!hasPublicKey && recipientId || sending}
+          >
             <RiAttachment2 />
           </IconButton>
           
           <TextArea
-            placeholder={
-              !hasPublicKey && recipientId
-                ? "You need to connect with this contact before sending messages"
-                : "Type a message..."
-            }
+            placeholder={getPlaceholderText()}
             value={message}
             onChange={(e) => {
               setMessage(e.target.value);
@@ -187,17 +226,21 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
             }}
             onKeyDown={handleKeyDown}
             rows={1}
-            disabled={sending || (!hasPublicKey && recipientId)}
+            disabled={sending || (!hasPublicKey && recipientId) || !conversationId}
           />
           
-          <IconButton type="button" title="Add emoji" disabled={!hasPublicKey && recipientId}>
+          <IconButton
+            type="button"
+            title="Add emoji"
+            disabled={!hasPublicKey && recipientId || sending}
+          >
             <RiEmotionLine />
           </IconButton>
           
           <IconButton 
             type="submit" 
             primary 
-            disabled={message.trim() === '' || sending || (!hasPublicKey && recipientId)}
+            disabled={message.trim() === '' || sending || (!hasPublicKey && recipientId) || !conversationId}
             title="Send message"
           >
             <RiSendPlaneFill />

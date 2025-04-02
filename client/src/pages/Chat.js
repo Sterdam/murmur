@@ -108,6 +108,41 @@ const LoadingContainer = styled.div`
   color: ${({ theme }) => theme.colors.textSecondary};
 `;
 
+const ErrorContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  text-align: center;
+  padding: 20px;
+  
+  h3 {
+    color: ${({ theme }) => theme.colors.error};
+    margin-bottom: 10px;
+  }
+  
+  p {
+    color: ${({ theme }) => theme.colors.textSecondary};
+    max-width: 500px;
+    margin-bottom: 20px;
+  }
+  
+  button {
+    background-color: ${({ theme }) => theme.colors.primary};
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    
+    &:hover {
+      background-color: ${({ theme }) => theme.colors.primaryDark};
+    }
+  }
+`;
+
 const Chat = () => {
   const { conversationId } = useParams();
   const dispatch = useDispatch();
@@ -116,10 +151,32 @@ const Chat = () => {
   const { contacts } = useSelector((state) => state.contacts);
   const { groups } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
-  const { loading: messagesLoading } = useSelector((state) => state.messages);
+  const { loading: messagesLoading, error: messagesError } = useSelector((state) => state.messages);
   
   const [conversation, setConversation] = useState(null);
   const [isGroup, setIsGroup] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // Fonction pour normaliser l'ID de conversation
+  const normalizeConversationId = (rawId) => {
+    // Vérifier si c'est déjà un ID de groupe
+    if (rawId.startsWith('group:')) {
+      return rawId;
+    }
+    
+    // Vérifier si c'est un ID de conversation directe (format userId:userId)
+    if (rawId.includes(':')) {
+      const parts = rawId.split(':');
+      if (parts.length === 2) {
+        return parts.sort().join(':');
+      }
+    }
+    
+    // Si c'est un UUID ou autre format non reconnu, on le retourne tel quel
+    // Le serveur a été modifié pour accepter temporairement ces formats
+    console.warn(`Format d'ID de conversation non standard détecté: ${rawId}`);
+    return rawId;
+  };
   
   // Load contacts and groups if needed
   useEffect(() => {
@@ -135,17 +192,22 @@ const Chat = () => {
   useEffect(() => {
     if (!conversationId) return;
     
-    console.log('Setting up conversation:', conversationId);
+    // Réinitialiser les erreurs
+    setError(null);
+    
+    // Normaliser l'ID de conversation
+    const normalizedId = normalizeConversationId(conversationId);
+    console.log('Setting up conversation:', normalizedId);
     
     // First, determine if this is a group conversation
-    const groupChat = conversationId.startsWith('group:');
+    const groupChat = normalizedId.startsWith('group:');
     setIsGroup(groupChat);
     
     let currentConversation = null;
     
     if (groupChat) {
       // For group chats, extract the groupId and find the group
-      const groupId = conversationId.replace('group:', '');
+      const groupId = normalizedId.replace('group:', '');
       console.log('Looking for group with ID:', groupId);
       
       const group = groups.find(g => g.id === groupId);
@@ -157,12 +219,13 @@ const Chat = () => {
         };
       } else {
         console.log('Group not found in:', groups);
+        // Ne pas définir d'erreur immédiatement, car les groupes peuvent être en cours de chargement
       }
-    } else {
+    } else if (normalizedId.includes(':')) {
       // For direct chats, the conversation ID is the sorted user IDs joined with ':'
       if (user && contacts.length > 0) {
         // Find the other user's ID in the conversation
-        const participants = conversationId.split(':');
+        const participants = normalizedId.split(':');
         console.log('Conversation participants:', participants, 'Current user:', user.id);
         
         const otherUserId = participants[0] === user.id ? participants[1] : participants[0];
@@ -178,24 +241,31 @@ const Chat = () => {
           };
         } else {
           console.log('Contact not found in:', contacts.map(c => `${c.username}(${c.id})`));
+          // Ne pas définir d'erreur immédiatement, car les contacts peuvent être en cours de chargement
         }
       }
+    } else {
+      // Format d'ID non standard (probablement un ancien UUID)
+      console.log('Non-standard conversation ID format, will attempt to fetch anyway');
+      // On ne définit pas d'erreur, on va essayer de récupérer quand même les messages
     }
     
     console.log('Setting conversation:', currentConversation);
     setConversation(currentConversation);
     
     // Set active conversation
-    dispatch(setActiveConversation(conversationId));
+    dispatch(setActiveConversation(normalizedId));
     
-    // Fetch messages
-    console.log('Fetching messages for conversation:', conversationId);
-    dispatch(fetchConversationMessages(conversationId))
+    // Fetch messages - capturing any errors
+    console.log('Fetching messages for conversation:', normalizedId);
+    dispatch(fetchConversationMessages(normalizedId))
+      .unwrap()
       .then(result => {
         console.log('Messages fetch result:', result);
       })
       .catch(error => {
         console.error('Failed to fetch messages:', error);
+        setError(error);
       });
     
     return () => {
@@ -213,6 +283,30 @@ const Chat = () => {
     // For now we'll just log the information
     console.log('Conversation details:', conversation);
   };
+  
+  // Si nous avons une erreur d'accès à la conversation
+  if (error && error.includes('Unauthorized access')) {
+    return (
+      <ChatContainer>
+        <ChatHeader>
+          <BackButton onClick={handleBack}>
+            <RiArrowLeftSLine />
+          </BackButton>
+          <ContactInfo>
+            <ContactName>Erreur d'accès</ContactName>
+          </ContactInfo>
+        </ChatHeader>
+        
+        <ErrorContainer>
+          <h3>Impossible d'accéder à cette conversation</h3>
+          <p>
+            Vous n'avez pas les autorisations nécessaires pour accéder à cette conversation ou le format de l'identifiant est incorrect.
+          </p>
+          <button onClick={handleBack}>Retourner à l'accueil</button>
+        </ErrorContainer>
+      </ChatContainer>
+    );
+  }
   
   return (
     <ChatContainer>

@@ -110,6 +110,41 @@ const EmptyState = styled.div`
   }
 `;
 
+const ErrorState = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: ${({ theme }) => theme.colors.error};
+  text-align: center;
+  padding: 20px;
+  
+  h3 {
+    margin-bottom: 10px;
+  }
+  
+  p {
+    color: ${({ theme }) => theme.colors.textSecondary};
+    max-width: 400px;
+    margin-bottom: 15px;
+  }
+  
+  button {
+    background-color: ${({ theme }) => theme.colors.primary};
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    
+    &:hover {
+      background-color: ${({ theme }) => theme.colors.primaryDark};
+    }
+  }
+`;
+
 // Fonction simple pour formater la date sans dépendance externe
 const formatSimpleDate = (date) => {
   if (!date) return '';
@@ -135,11 +170,29 @@ const formatSimpleTime = (date) => {
 
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
-  const { conversations, loading } = useSelector((state) => state.messages);
+  const { conversations, loading, error } = useSelector((state) => state.messages);
   const { user } = useSelector((state) => state.auth);
-  const messages = conversations[conversationId] || [];
+  
+  // Normaliser l'ID de conversation pour assurer la cohérence
+  const getNormalizedId = (id) => {
+    if (id.startsWith('group:')) return id;
+    
+    if (id.includes(':')) {
+      const parts = id.split(':');
+      if (parts.length === 2) {
+        return parts.sort().join(':');
+      }
+    }
+    
+    return id; // Format UUID ou autre, retourner tel quel
+  };
+  
+  const normalizedId = getNormalizedId(conversationId);
+  const messages = conversations[normalizedId] || conversations[conversationId] || [];
+  
   const messagesEndRef = useRef(null);
   const [refreshInterval, setRefreshInterval] = useState(null);
+  const [localError, setLocalError] = useState(null);
   
   // Récupérer les messages au chargement et démarrer un intervalle
   useEffect(() => {
@@ -149,14 +202,22 @@ const MessageList = ({ conversationId }) => {
       // Récupération initiale après un court délai
       const initialTimeout = setTimeout(() => {
         dispatch(fetchConversationMessages(conversationId))
-          .catch(err => console.error('Failed initial message fetch:', err));
+          .unwrap()
+          .catch(err => {
+            console.error('Failed initial message fetch:', err);
+            setLocalError(err);
+          });
       }, 800);
       
       // Rafraîchir moins fréquemment (30 secondes)
       const intervalId = setInterval(() => {
         console.log('Auto-refreshing messages for conversation:', conversationId);
         dispatch(fetchConversationMessages(conversationId))
-          .catch(err => console.error('Failed to refresh messages:', err));
+          .unwrap()
+          .catch(err => {
+            console.error('Failed to refresh messages:', err);
+            // Ne pas mettre à jour l'erreur locale ici pour éviter de bloquer l'interface
+          });
       }, 30000); // Augmenté à 30 secondes
       
       setRefreshInterval(intervalId);
@@ -167,6 +228,7 @@ const MessageList = ({ conversationId }) => {
         if (refreshInterval) {
           clearInterval(refreshInterval);
         }
+        setLocalError(null);
       };
     }
   }, [conversationId, dispatch]);
@@ -177,6 +239,45 @@ const MessageList = ({ conversationId }) => {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
+  
+  // Réessayer en cas d'erreur
+  const handleRetry = () => {
+    setLocalError(null);
+    dispatch(fetchConversationMessages(conversationId))
+      .unwrap()
+      .catch(err => {
+        console.error('Retry failed:', err);
+        setLocalError(err);
+      });
+  };
+  
+  // Afficher un message d'erreur approprié
+  if (localError || error) {
+    const errorMessage = localError || error;
+    
+    // Erreur d'accès non autorisé
+    if (errorMessage.includes('Unauthorized access')) {
+      return (
+        <ErrorState>
+          <h3>Accès non autorisé</h3>
+          <p>
+            Vous n'avez pas les permissions nécessaires pour accéder à cette conversation 
+            ou l'identifiant de conversation est invalide.
+          </p>
+          <button onClick={handleRetry}>Réessayer</button>
+        </ErrorState>
+      );
+    }
+    
+    // Autres erreurs
+    return (
+      <ErrorState>
+        <h3>Erreur lors du chargement des messages</h3>
+        <p>{errorMessage || "Une erreur s'est produite lors de la récupération des messages."}</p>
+        <button onClick={handleRetry}>Réessayer</button>
+      </ErrorState>
+    );
+  }
   
   // Group messages by date, with safety check for message.timestamp
   const groupedMessages = messages.reduce((groups, message) => {
