@@ -1,0 +1,13 @@
+FROM nginx:alpine
+
+WORKDIR /usr/share/nginx/html
+
+# Créer un fichier HTML statique directement
+RUN echo '<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Murmur - Messagerie Sécurisée</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Open Sans","Helvetica Neue",sans-serif;background-color:#121212;color:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh;text-align:center;padding:20px}.container{max-width:800px}h1{font-size:3rem;margin-bottom:1rem;background:linear-gradient(90deg,#7928CA,#FF0080);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}p{font-size:1.2rem;margin-bottom:2rem;line-height:1.6;color:rgba(255,255,255,.8)}.card{background-color:rgba(255,255,255,.08);border-radius:10px;padding:2rem;margin:2rem 0;box-shadow:0 4px 20px rgba(0,0,0,.3)}.feature{margin:1.5rem 0}.feature h3{color:#FF0080;margin-bottom:.5rem}.button{display:inline-block;background:linear-gradient(90deg,#7928CA,#FF0080);color:white;padding:12px 24px;border-radius:24px;font-size:1rem;font-weight:bold;text-decoration:none;margin-top:1rem;transition:transform .2s,box-shadow .2s}.button:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(255,0,128,.4)}</style></head><body><div class="container"><h1>Murmur</h1><p>Une messagerie sécurisée, respectueuse de votre vie privée et chiffrée de bout en bout.</p><div class="card"><div class="feature"><h3>Chiffrement de bout en bout</h3><p>Vos messages sont protégés et ne peuvent être lus que par vous et vos destinataires.</p></div><div class="feature"><h3>Zéro collecte de données</h3><p>Aucune information personnelle n\'est collectée pour garantir votre anonymat.</p></div><div class="feature"><h3>Open Source</h3><p>Code transparent et vérifiable par la communauté.</p></div></div><a href="#" class="button">Commencer</a></div></body></html>' > index.html
+
+# Configuration Nginx
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 3000
+
+CMD ["nginx", "-g", "daemon off;"]
