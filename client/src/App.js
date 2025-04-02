@@ -7,6 +7,7 @@ import { getEncryptionKeys } from './utils/storage';
 import { setKeys } from './store/slices/authSlice';
 import { addMessage, updateMessageStatus } from './store/slices/messagesSlice';
 import { decryptMessage } from './services/encryption';
+import { rehydrateStoreAction } from './store/persistMiddleware';
 
 // Components
 import PrivateRoute from './components/routing/PrivateRoute';
@@ -51,10 +52,14 @@ const App = () => {
   // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
   const handlePrivateMessage = useCallback(async (data) => {
     try {
-      console.log('Received private message:', data);
+      console.log('Message privé reçu:', {
+        expediteur: data.senderUsername, 
+        longueurMessage: data.message?.length,
+        avecCleChiffree: !!data.encryptedKey
+      });
       
       if (!user || !user.id) {
-        console.error('User data not available for handling private message');
+        console.error('Données utilisateur non disponibles pour traiter le message privé');
         return;
       }
       
@@ -62,19 +67,22 @@ const App = () => {
       const { privateKey } = getEncryptionKeys() || {};
       
       if (!privateKey) {
-        console.error('No private key available for decryption');
+        console.error('Aucune clé privée disponible pour le déchiffrement');
         return;
       }
       
-      // Créer l'ID de conversation
-      const conversationId = [user.id, data.senderId].sort().join(':');
+      // Créer l'ID de conversation normalisé
+      const participants = [user.id, data.senderId].sort();
+      const conversationId = participants.join(':');
+      
+      console.log(`ID de conversation normalisé: ${conversationId}`);
       
       // Essayer de déchiffrer le message
       let messageText = data.message;
       try {
         if (data.encryptedKey && privateKey) {
-          console.log('Trying to decrypt message with encryptedKey');
-          const metadata = data.metadata || '{}'; // Utiliser un objet vide si pas de métadonnées
+          console.log('Tentative de déchiffrement du message avec encryptedKey');
+          const metadata = data.metadata || '{}'; 
           messageText = await decryptMessage(
             data.message,
             data.encryptedKey,
@@ -83,30 +91,38 @@ const App = () => {
             null,
             metadata
           );
-          console.log('Message decrypted successfully');
+          console.log('Message déchiffré avec succès');
         }
       } catch (decryptError) {
-        console.error('Failed to decrypt received message:', decryptError);
+        console.error('Échec du déchiffrement du message reçu:', decryptError);
         messageText = '[Message chiffré - Impossible de déchiffrer]';
       }
       
       // Dispatch l'action pour ajouter le message
+      const messageObject = {
+        ...data,
+        message: messageText,
+        conversationId,
+        id: data.id || Date.now().toString() + Math.floor(Math.random() * 1000),
+        timestamp: data.timestamp || Date.now()
+      };
+      
+      console.log('Ajout du message au store:', messageObject.id);
+      
+      // Important: Utiliser la structure correcte pour l'action
       dispatch(addMessage({
-        message: {
-          ...data,
-          message: messageText,
-          conversationId,
-          id: data.id || Date.now().toString(),
-          timestamp: data.timestamp || Date.now()
-        },
+        message: messageObject,
       }));
       
       // Notification si l'app est en arrière-plan
       if (document.hidden) {
         showNotification(data.senderUsername, messageText);
       }
+      
+      // Persister les messages immédiatement
+      dispatch(rehydrateStoreAction());
     } catch (error) {
-      console.error('Error handling private message:', error);
+      console.error('Erreur de traitement du message privé:', error);
     }
   }, [dispatch, user]);
   
@@ -218,20 +234,23 @@ const App = () => {
   useEffect(() => {
     const initializeApp = async () => {
       try {
+        // Réhydrater le store dès le début
+        dispatch(rehydrateStoreAction());
+        
         // Charger les clés de chiffrement si disponibles
         const keys = getEncryptionKeys();
         if (keys) {
-          console.log("Loading encryption keys from storage");
+          console.log("Chargement des clés de chiffrement depuis le stockage");
           dispatch(setKeys(keys));
         }
         
         // Initialiser la connexion socket si authentifié
         if (isAuthenticated && token) {
-          console.log("Connecting to socket with token");
+          console.log("Connexion au socket avec token");
           
           // Connecter le socket avec le token
           if (socketService.connect(token)) {
-            console.log("Socket connected, setting up handlers");
+            console.log("Socket connecté, configuration des gestionnaires");
             setSocketConnected(true);
             
             // Configurer les gestionnaires de messages
@@ -251,7 +270,7 @@ const App = () => {
           setSocketConnected(false);
         }
       } catch (error) {
-        console.error("Error initializing app:", error);
+        console.error("Erreur d'initialisation de l'app:", error);
       } finally {
         setInitialized(true);
       }

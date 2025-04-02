@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import styled from 'styled-components';
-import { fetchConversationMessages } from '../../store/slices/messagesSlice';
+import { fetchConversationMessages, normalizeConversationId } from '../../store/slices/messagesSlice';
 import { FiAlertCircle, FiRefreshCw } from 'react-icons/fi';
 
 // Components
@@ -187,8 +187,23 @@ const StyledButton = styled.button`
 
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
-  const { conversations, loading, error } = useSelector((state) => state.messages);
   const { user } = useSelector((state) => state.auth);
+  const { loading, error } = useSelector((state) => state.messages);
+  
+  // Normaliser l'ID de conversation pour la cohérence
+  const normalizedId = normalizeConversationId(conversationId);
+  console.log(`MessageList: Rendu pour conversation ${conversationId} → normalisée: ${normalizedId}`);
+  
+  // Obtenir les messages en vérifiant les deux formes d'ID possible
+  const messages = useSelector((state) => {
+    const messagesNormalized = state.messages.conversations[normalizedId] || [];
+    const messagesOriginal = state.messages.conversations[conversationId] || [];
+    
+    // Utiliser celui qui a des messages, en préférant l'ID normalisé
+    const result = messagesNormalized.length > 0 ? messagesNormalized : messagesOriginal;
+    console.log(`MessageList: ${result.length} messages trouvés pour ${normalizedId}`);
+    return result;
+  });
   
   const listContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -198,36 +213,7 @@ const MessageList = ({ conversationId }) => {
   const [oldScrollHeight, setOldScrollHeight] = useState(0);
   const [lastLoadTime, setLastLoadTime] = useState(0);
   
-  // Fonction memoïsée pour normaliser les IDs de conversation
-  const getNormalizedId = useCallback((id) => {
-    if (!id) return '';
-    
-    if (id.startsWith('group:')) return id;
-    
-    if (id.includes(':')) {
-      const parts = id.split(':');
-      if (parts.length === 2) {
-        return parts.sort().join(':');
-      }
-    }
-    
-    return id;
-  }, []);
-  
-  const normalizedId = getNormalizedId(conversationId);
-  
-  // Récupérer les messages avec fallback sur l'ID non normalisé si nécessaire
-  const messages = useSelector(state => {
-    const messagesFromStore = 
-      state.messages.conversations[normalizedId] || 
-      state.messages.conversations[conversationId] || 
-      [];
-    
-    // S'assurer que l'array est valide
-    return Array.isArray(messagesFromStore) ? messagesFromStore : [];
-  });
-  
-  // Récupérer les messages lorsque l'ID de conversation change
+  // Effet pour charger les messages au montage du composant
   useEffect(() => {
     if (!conversationId) return;
     
@@ -254,8 +240,8 @@ const MessageList = ({ conversationId }) => {
       }
       
       try {
-        console.log(`Loading messages for conversation: ${conversationId}`);
-        await dispatch(fetchConversationMessages(conversationId)).unwrap();
+        console.log(`Loading messages for conversation: ${normalizedId}`);
+        await dispatch(fetchConversationMessages(normalizedId)).unwrap();
         
         // Mettre à jour le dernier temps de chargement
         setLastLoadTime(Date.now());
@@ -300,7 +286,7 @@ const MessageList = ({ conversationId }) => {
       isMounted.current = false;
       setLocalError(null);
     };
-  }, [conversationId, dispatch]); // Dépendances minimales!
+  }, [normalizedId, dispatch]); // Dépendances minimales!
   
   // Surveiller les changements dans les messages pour détecter les nouveaux messages
   useEffect(() => {
@@ -330,7 +316,7 @@ const MessageList = ({ conversationId }) => {
   const handleRetry = async () => {
     setLocalError(null);
     try {
-      await dispatch(fetchConversationMessages(conversationId)).unwrap();
+      await dispatch(fetchConversationMessages(normalizedId)).unwrap();
       setLastLoadTime(Date.now());
     } catch (err) {
       console.error('Retry failed:', err);

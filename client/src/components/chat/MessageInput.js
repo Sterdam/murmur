@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
 import { RiSendPlaneFill, RiAttachment2, RiEmotionLine } from 'react-icons/ri';
 import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
-import { sendMessage, clearMessageError } from '../../store/slices/messagesSlice';
+import { sendMessage, clearMessageError, normalizeConversationId } from '../../store/slices/messagesSlice';
 import socketService from '../../services/socket';
 
 const InputContainer = styled.div`
@@ -117,26 +117,15 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   const { error: messageError } = useSelector((state) => state.messages);
   
   // Normaliser l'ID de conversation de façon cohérente
-  const normalizeConversationId = useCallback((id) => {
-    if (!id) return null;
-    
-    // Si c'est un ID de groupe, le laisser tel quel
-    if (id.startsWith('group:')) return id;
-    
-    // Si c'est un ID direct, trier les parties
-    if (id.includes(':')) {
-      const parts = id.split(':');
-      if (parts.length === 2) {
-        return parts.sort().join(':');
-      }
-    }
-    
-    // Format inconnu, retourner tel quel
-    return id;
-  }, []);
+  const normalizedConversationId = useMemo(() => {
+    return conversationId ? normalizeConversationId(conversationId) : null;
+  }, [conversationId]);
   
-  // Normaliser l'ID de conversation
-  const normalizedConversationId = conversationId ? normalizeConversationId(conversationId) : null;
+  // Log pour débogage
+  useEffect(() => {
+    console.log(`MessageInput: conversation ${conversationId} → normalisée: ${normalizedConversationId}`);
+    console.log(`MessageInput: recipientId=${recipientId}, groupId=${groupId}`);
+  }, [conversationId, normalizedConversationId, recipientId, groupId]);
   
   // Trouver le destinataire et vérifier sa clé publique
   const recipient = useCallback(() => {
@@ -254,6 +243,8 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
       } else if (groupId) {
         messageData.groupId = groupId;
       }
+      
+      console.log(`Envoi de message à ${normalizedConversationId}`);
       
       // Dispatch de l'action d'envoi
       await dispatch(sendMessage(messageData)).unwrap();

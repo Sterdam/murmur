@@ -4,6 +4,10 @@ import authReducer from './slices/authSlice';
 import messagesReducer from './slices/messagesSlice';
 import contactsReducer from './slices/contactsSlice';
 import groupsReducer from './slices/groupsSlice';
+import { createPersistMiddleware, loadPersistedState } from './persistMiddleware';
+
+// Charger l'état persisté depuis localStorage
+const preloadedState = loadPersistedState();
 
 // Store avec configuration optimisée
 const store = configureStore({
@@ -13,6 +17,7 @@ const store = configureStore({
     contacts: contactsReducer,
     groups: groupsReducer,
   },
+  preloadedState, // Charger l'état persisté
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       serializableCheck: {
@@ -34,7 +39,7 @@ const store = configureStore({
       thunk: {
         extraArgument: undefined,
       },
-    }),
+    }).concat(createPersistMiddleware()), // Ajouter le middleware de persistance
   // Activer le DevTools uniquement en environnement non-production
   devTools: process.env.NODE_ENV !== 'production',
 });

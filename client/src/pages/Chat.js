@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
@@ -6,7 +6,7 @@ import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
 import { FiAlertCircle } from 'react-icons/fi';
 
 // Redux actions
-import { fetchConversationMessages, setActiveConversation } from '../store/slices/messagesSlice';
+import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../store/slices/messagesSlice';
 import { fetchContacts } from '../store/slices/contactsSlice';
 import { fetchGroups } from '../store/slices/groupsSlice';
 
@@ -216,6 +216,9 @@ const Chat = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
+  // Normaliser l'ID de conversation une fois pour tout le composant
+  const normalizedId = useMemo(() => normalizeConversationId(conversationId), [conversationId]);
+  
   const { contacts, loading: contactsLoading } = useSelector((state) => state.contacts);
   const { groups, loading: groupsLoading } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
@@ -227,28 +230,20 @@ const Chat = () => {
   const [infoOpen, setInfoOpen] = useState(false);
   const [onlineStatus, setOnlineStatus] = useState(false);
   
-  const loadedRef = useRef(false);
+  const loadedRef = React.useRef(false);
   
-  // Fonction memoïsée pour normaliser l'ID de conversation
-  const normalizeConversationId = useCallback((rawId) => {
-    if (!rawId) return '';
-    
-    // Vérifier si c'est déjà un ID de groupe
-    if (rawId.startsWith('group:')) {
-      return rawId;
+  // Fonction de débogage pour aider à résoudre les problèmes
+  const debugConversation = useCallback(() => {
+    console.group('Débogage Chat');
+    console.log('ID conversation original:', conversationId);
+    console.log('ID conversation normalisé:', normalizedId);
+    console.log('Utilisateur actuel:', user?.id, user?.username);
+    console.log('Est un groupe?', isGroup);
+    if (conversation) {
+      console.log('Destinataire:', conversation.id, conversation.username || conversation.name);
     }
-    
-    // Vérifier si c'est un ID de conversation directe (format userId:userId)
-    if (rawId.includes(':')) {
-      const parts = rawId.split(':');
-      if (parts.length === 2) {
-        return parts.sort().join(':');
-      }
-    }
-    
-    console.warn(`Format d'ID de conversation non standard détecté: ${rawId}`);
-    return rawId;
-  }, []);
+    console.groupEnd();
+  }, [conversationId, normalizedId, user, isGroup, conversation]);
   
   // Load contacts and groups if needed
   useEffect(() => {
@@ -282,8 +277,7 @@ const Chat = () => {
     // Réinitialiser les erreurs
     setError(null);
     
-    // Normaliser l'ID de conversation
-    const normalizedId = normalizeConversationId(conversationId);
+    console.log(`Chat: Ouverture de conversation ${conversationId} → ${normalizedId}`);
     
     // Déterminer si c'est une conversation de groupe
     const groupChat = normalizedId.startsWith('group:');
@@ -302,8 +296,7 @@ const Chat = () => {
           isGroup: true
         };
       } else if (!groupsLoading && groups.length > 0) {
-        // Si les groupes sont chargés mais aucun ne correspond, c'est une erreur
-        console.error('Group not found:', groupId);
+        console.error('Groupe non trouvé:', groupId);
         setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
     } else if (normalizedId.includes(':')) {
@@ -324,14 +317,13 @@ const Chat = () => {
           // Simuler un statut en ligne aléatoire (pour démo)
           setOnlineStatus(Math.random() > 0.5);
         } else if (!contactsLoading && contacts.length > 0) {
-          // Si les contacts sont chargés mais aucun ne correspond, c'est une erreur
-          console.error('Contact not found:', otherUserId);
+          console.error('Contact non trouvé:', otherUserId);
           setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
     } else {
       // Format d'ID non standard
-      console.warn('Non-standard conversation ID format, will attempt to fetch anyway');
+      console.warn('Format d\'ID de conversation non standard, tentative de chargement quand même');
       // Pour ces cas, on crée un objet de conversation "minimal"
       currentConversation = {
         id: normalizedId,
@@ -342,17 +334,17 @@ const Chat = () => {
     
     setConversation(currentConversation);
     
-    // Définir la conversation active dans Redux
+    // Définir la conversation active dans Redux (utiliser l'ID normalisé)
     dispatch(setActiveConversation(normalizedId));
     
-    // IMPORTANT: Nous ne chargeons pas les messages ici,
-    // car le composant MessageList s'en chargera
+    // Appeler la fonction de débogage
+    debugConversation();
     
     return () => {
       // Effacer la conversation active au démontage
       dispatch(setActiveConversation(null));
     };
-  }, [conversationId, dispatch, groups, contacts, user, normalizeConversationId, groupsLoading, contactsLoading]); // Retiré messagesLoading des dépendances
+  }, [conversationId, dispatch, groups, contacts, user, debugConversation, normalizedId, groupsLoading, contactsLoading]);
   
   // Mettre à jour l'erreur si une erreur Redux est détectée
   useEffect(() => {
@@ -526,9 +518,9 @@ const Chat = () => {
           </LoadingContainer>
         ) : (
           <>
-            <MessageList conversationId={conversationId} />
+            <MessageList conversationId={normalizedId} />
             <MessageInput 
-              conversationId={conversationId}
+              conversationId={normalizedId}
               recipientId={!isGroup && conversation ? conversation.id : null}
               groupId={isGroup && conversation ? conversation.id : null}
             />

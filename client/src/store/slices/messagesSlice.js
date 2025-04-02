@@ -6,7 +6,7 @@ import { encryptMessage, decryptMessage } from '../../services/encryption';
 import { storeOfflineMessage, syncOfflineMessages } from '../../utils/offlineSync';
 
 // Fonction utilitaire pour normaliser les ID de conversation
-const normalizeConversationId = (id) => {
+export const normalizeConversationId = (id) => {
   if (!id) return id;
   
   // Si c'est un ID de groupe, le laisser tel quel
@@ -24,6 +24,8 @@ const normalizeConversationId = (id) => {
   return id;
 };
 
+
+
 // Async thunks
 export const fetchConversationMessages = createAsyncThunk(
   'messages/fetchMessages',
@@ -33,23 +35,20 @@ export const fetchConversationMessages = createAsyncThunk(
         return rejectWithValue('ID de conversation manquant');
       }
       
+      // Normaliser l'ID de conversation avant toute opération
+      const normalizedId = normalizeConversationId(conversationId);
+      console.log(`Fetching messages for: ${conversationId} → normalized to: ${normalizedId}`);
+      
       // Vérifier si nous sommes déjà en train de charger cette conversation
       const state = getState();
       if (state.messages.loading) {
         console.log(`Skipping fetchConversationMessages - loading in progress`);
         // Retourner les messages actuels plutôt que de déclencher une nouvelle requête
-        const normalizedId = normalizeConversationId(conversationId);
-            
         return {
           conversationId: normalizedId,
           messages: state.messages.conversations[normalizedId] || [],
         };
       }
-      
-      console.log(`Fetching messages for conversation: ${conversationId}`);
-      
-      // Normaliser l'ID de conversation
-      const normalizedId = normalizeConversationId(conversationId);
       
       // Vérifier si on a déjà des messages pour cette conversation
       const existingMessages = state.messages.conversations[normalizedId] || [];
@@ -70,6 +69,7 @@ export const fetchConversationMessages = createAsyncThunk(
       }
       
       try {
+        // Utiliser l'ID normalisé pour l'API
         const response = await api.get(`/messages/${normalizedId}`);
         
         // Vérifier la structure de la réponse
@@ -190,6 +190,7 @@ export const fetchConversationMessages = createAsyncThunk(
     }
   }
 );
+
 
 export const sendMessage = createAsyncThunk(
   'messages/sendMessage',
