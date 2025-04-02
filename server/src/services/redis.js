@@ -214,19 +214,34 @@ const getContactRequestById = async (requestId) => {
 const getIncomingContactRequests = async (userId) => {
   if (!userId) return [];
   
-  const requestIds = await redisClient.smembers(`contact-requests:incoming:${userId}`);
-  
-  if (!requestIds.length) return [];
-  
-  const requests = await Promise.all(
-    requestIds.map(async (id) => {
-      const requestData = await redisClient.get(`contact-request:${id}`);
-      return requestData ? JSON.parse(requestData) : null;
-    })
-  );
-  
-  // Filter out requests that don't exist
-  return requests.filter(Boolean);
+  try {
+    const requestIds = await redisClient.smembers(`contact-requests:incoming:${userId}`);
+    
+    if (!requestIds || !requestIds.length) return [];
+    
+    console.log(`Found ${requestIds.length} incoming request IDs for user ${userId}`);
+    
+    const requests = await Promise.all(
+      requestIds.map(async (id) => {
+        try {
+          const requestData = await redisClient.get(`contact-request:${id}`);
+          return requestData ? JSON.parse(requestData) : null;
+        } catch (err) {
+          console.error(`Error parsing request ${id}:`, err);
+          return null;
+        }
+      })
+    );
+    
+    // Filter out requests that don't exist
+    const validRequests = requests.filter(Boolean);
+    console.log(`Returning ${validRequests.length} valid incoming requests for user ${userId}`);
+    
+    return validRequests;
+  } catch (error) {
+    console.error(`Error getting incoming contact requests for user ${userId}:`, error);
+    return [];
+  }
 };
 
 /**
@@ -237,19 +252,34 @@ const getIncomingContactRequests = async (userId) => {
 const getOutgoingContactRequests = async (userId) => {
   if (!userId) return [];
   
-  const requestIds = await redisClient.smembers(`contact-requests:outgoing:${userId}`);
-  
-  if (!requestIds.length) return [];
-  
-  const requests = await Promise.all(
-    requestIds.map(async (id) => {
-      const requestData = await redisClient.get(`contact-request:${id}`);
-      return requestData ? JSON.parse(requestData) : null;
-    })
-  );
-  
-  // Filter out requests that don't exist
-  return requests.filter(Boolean);
+  try {
+    const requestIds = await redisClient.smembers(`contact-requests:outgoing:${userId}`);
+    
+    if (!requestIds || !requestIds.length) return [];
+    
+    console.log(`Found ${requestIds.length} outgoing request IDs for user ${userId}`);
+    
+    const requests = await Promise.all(
+      requestIds.map(async (id) => {
+        try {
+          const requestData = await redisClient.get(`contact-request:${id}`);
+          return requestData ? JSON.parse(requestData) : null;
+        } catch (err) {
+          console.error(`Error parsing request ${id}:`, err);
+          return null;
+        }
+      })
+    );
+    
+    // Filter out requests that don't exist
+    const validRequests = requests.filter(Boolean);
+    console.log(`Returning ${validRequests.length} valid outgoing requests for user ${userId}`);
+    
+    return validRequests;
+  } catch (error) {
+    console.error(`Error getting outgoing contact requests for user ${userId}:`, error);
+    return [];
+  }
 };
 
 /**

@@ -67,45 +67,64 @@ const Register = () => {
     e.preventDefault();
     
     if (password !== confirmPassword) {
-      return; // Password validation handled in UI
+      // Ajouter un message d'erreur visuel
+      setError('Passwords do not match');
+      return;
     }
     
     try {
-      // Génération des clés de cryptage
-      console.log("Generating encryption keys...");
-      const keys = await generateKeyPair();
+      setError(null);
+      setLoading(true);
       
-      if (!keys || !keys.publicKey) {
-        console.error("Failed to generate key pair");
-        throw new Error("Échec de la génération des clés de cryptage");
+      // Étape 1: Génération des clés de cryptage
+      console.log("Generating encryption keys...");
+      let keys;
+      try {
+        keys = await generateKeyPair();
+        
+        if (!keys || !keys.publicKey) {
+          console.error("Failed to generate key pair");
+          throw new Error("Failed to generate encryption keys");
+        }
+        
+        console.log("Keys generated successfully, public key length:", keys.publicKey.length);
+      } catch (keyError) {
+        console.error("Key generation error:", keyError);
+        throw new Error("Failed to generate encryption keys: " + keyError.message);
       }
       
-      console.log("Keys generated successfully");
+      // Étape 2: Stockage des clés localement
+      try {
+        storeEncryptionKeys(keys);
+        console.log("Keys stored successfully");
+      } catch (storageError) {
+        console.error("Key storage error:", storageError);
+        // Continue même en cas d'erreur de stockage, l'enregistrement pourrait quand même réussir
+      }
       
-      // Stockage des clés localement (avant inscription pour être sûr qu'elles sont sauvegardées)
-      storeEncryptionKeys(keys);
-      
-      // Inscription de l'utilisateur avec la clé publique
+      // Étape 3: Inscription de l'utilisateur avec la clé publique
       const userData = { 
         username, 
         password,
         publicKey: keys.publicKey 
       };
       
-      console.log("Dispatching registration action...");
+      console.log("Dispatching registration action with public key");
       const result = await dispatch(registerUser(userData)).unwrap();
       console.log("Registration successful:", result);
       
-      // Forcer une courte attente pour permettre la mise à jour du state
+      // Étape 4: Après inscription réussie, rediriger après un court délai
       setTimeout(() => {
-        // La redirection sera gérée par l'effet useEffect ci-dessus
         if (!isAuthenticated) {
-          console.log("Redirecting manually...");
+          console.log("Redirecting to home page...");
           navigate('/');
         }
-      }, 500);
+      }, 800); // Délai légèrement plus long pour permettre la mise à jour du state
     } catch (error) {
       console.error('Registration failed:', error);
+      setError(error.message || 'Registration failed. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 

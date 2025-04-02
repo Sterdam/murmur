@@ -8,7 +8,11 @@ export const registerUser = createAsyncThunk(
   'auth/register',
   async ({ username, password, publicKey }, { rejectWithValue }) => {
     try {
-      console.log('Registering user with public key of length:', publicKey ? publicKey.length : 'none');
+      console.log('Registering user with public key:', publicKey ? `${publicKey.substring(0, 20)}...` : 'none');
+      
+      if (!username || !password) {
+        throw new Error('Username and password are required');
+      }
       
       const response = await api.post('/auth/register', { 
         username, 
@@ -16,13 +20,23 @@ export const registerUser = createAsyncThunk(
         publicKey
       });
       
-      if (!response.data || !response.data.data) {
-        throw new Error('Invalid response format from server');
+      if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'Registration failed');
       }
       
+      if (!response.data.data || !response.data.data.token) {
+        throw new Error('Invalid response format from server: missing token');
+      }
+      
+      console.log('Registration API response successful');
       return response.data.data;
     } catch (error) {
       console.error('Registration error:', error);
+      
+      if (error.response?.status === 409) {
+        return rejectWithValue('Username already taken. Please choose a different username.');
+      }
+      
       return rejectWithValue(
         error.response?.data?.message || 
         error.message || 

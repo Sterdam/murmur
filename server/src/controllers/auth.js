@@ -9,7 +9,7 @@ const { generateKeyPair } = require('../services/encryption');
  */
 exports.registerUser = async (req, res, next) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, publicKey } = req.body;
     
     // Validate input
     if (!username || !password) {
@@ -19,15 +19,43 @@ exports.registerUser = async (req, res, next) => {
       });
     }
     
-    // Register user
-    const { user, token } = await register({ username, password });
+    console.log(`Registering new user: ${username} with public key: ${publicKey ? 'provided' : 'missing'}`);
     
-    res.status(201).json({
-      success: true,
-      data: { user, token },
-    });
+    // Register user with publicKey
+    const userData = {
+      username,
+      password,
+      publicKey: publicKey || null
+    };
+    
+    try {
+      const { user, token } = await register(userData);
+      
+      console.log(`User registered successfully: ${username}, token provided: ${!!token}`);
+      
+      res.status(201).json({
+        success: true,
+        data: { user, token },
+      });
+    } catch (registerError) {
+      console.error(`Registration failed for ${username}:`, registerError);
+      
+      // Specific error handling
+      if (registerError.message.includes('already taken')) {
+        return res.status(409).json({
+          success: false,
+          message: 'Username already taken. Please choose a different username.'
+        });
+      }
+      
+      throw registerError;
+    }
   } catch (error) {
-    next(error);
+    console.error('Registration error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Registration failed. Please try again later.'
+    });
   }
 };
 

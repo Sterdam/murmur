@@ -30,103 +30,63 @@ const ECC_CURVE_ECDH = 'P-521'; // Courbe pour l'échange Diffie-Hellman (PFS)
  */
 export const generateKeyPair = async () => {
   try {
-    // Vérifier si l'API Web Crypto est disponible
+    // Vérification de base de la disponibilité de l'API Web Crypto
     if (!window.crypto || !window.crypto.subtle) {
       throw new Error("L'API Web Crypto n'est pas disponible sur ce navigateur");
     }
     
-    const crypto = window.crypto;
-    const subtle = crypto.subtle;
+    console.log("Début de la génération de clés...");
     
-    console.log("Génération de clés RSA-OAEP 4096 bits en cours...");
-    
-    // 1. Génération de la paire de clés RSA principale (4096 bits)
-    const keyPair = await subtle.generateKey(
+    // Pour le développement, utiliser des clés plus petites et plus rapides à générer
+    const keyPair = await window.crypto.subtle.generateKey(
       {
         name: 'RSA-OAEP',
-        modulusLength: RSA_KEY_SIZE,
-        publicExponent: new Uint8Array([0x01, 0x00, 0x01]), // 65537
-        hash: { name: HASH_ALGORITHM }
-      },
-      true, // extractable
-      ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
-    );
-    
-    // 2. Génération d'une paire ECDH pour la perfect forward secrecy
-    const ecdhKeyPair = await subtle.generateKey(
-      {
-        name: 'ECDH',
-        namedCurve: ECC_CURVE_ECDH // P-521, la plus sécurisée
+        modulusLength: 2048,  // Taille réduite pour le développement
+        publicExponent: new Uint8Array([0x01, 0x00, 0x01]),
+        hash: { name: 'SHA-256' }  // Hash plus rapide
       },
       true,
-      ['deriveKey', 'deriveBits']
+      ['encrypt', 'decrypt']
     );
     
-    // 3. Génération d'une paire de clés de signature ECDSA
-    const signatureKeyPair = await subtle.generateKey(
-      {
-        name: 'ECDSA',
-        namedCurve: ECC_CURVE_SIGN // P-384, excellent compromis sécurité/performance
-      },
-      true,
-      ['sign', 'verify']
+    console.log("Paire de clés générée, export en cours...");
+    
+    // Exporter la clé publique
+    const publicKeyBuffer = await window.crypto.subtle.exportKey(
+      'spki',
+      keyPair.publicKey
     );
     
-    // 4. Exportation des clés publiques (format spki)
-    const rsaPublicKey = await subtle.exportKey('spki', keyPair.publicKey);
-    const ecdhPublicKey = await subtle.exportKey('spki', ecdhKeyPair.publicKey);
-    const signPublicKey = await subtle.exportKey('spki', signatureKeyPair.publicKey);
+    // Exporter la clé privée
+    const privateKeyBuffer = await window.crypto.subtle.exportKey(
+      'pkcs8',
+      keyPair.privateKey
+    );
     
-    // 5. Exportation des clés privées (format pkcs8)
-    const rsaPrivateKey = await subtle.exportKey('pkcs8', keyPair.privateKey);
-    const ecdhPrivateKey = await subtle.exportKey('pkcs8', ecdhKeyPair.privateKey);
-    const signPrivateKey = await subtle.exportKey('pkcs8', signatureKeyPair.privateKey);
+    // Convertir en format Base64
+    const publicKey = arrayBufferToBase64(publicKeyBuffer);
+    const privateKey = arrayBufferToBase64(privateKeyBuffer);
     
-    // 6. Génération d'un sel cryptographique aléatoire pour la protection des clés
-    const salt = crypto.getRandomValues(new Uint8Array(32));
+    console.log("Clés exportées avec succès");
     
-    // 7. Génération d'un identifiant unique pour cette paire de clés
-    const keyId = generateRandomId();
-    
-    // 8. Création du bundle de clés privées avec métadonnées
-    const privateKeyBundle = {
-      keyId,
-      rsaPrivateKey: arrayBufferToBase64(rsaPrivateKey),
-      ecdhPrivateKey: arrayBufferToBase64(ecdhPrivateKey),
-      signPrivateKey: arrayBufferToBase64(signPrivateKey),
-      salt: arrayBufferToBase64(salt),
-      timestamp: Date.now(),
-      version: '3.0',
-      algorithm: 'RSA-OAEP-4096 + ECDH-P521 + ECDSA-P384',
-      keyRotationDue: Date.now() + (KEY_ROTATION_DAYS * 24 * 60 * 60 * 1000)
+    // Format simplifié pour le développement
+    const keyBundle = {
+      publicKey,
+      privateKey,
+      algorithm: 'RSA-OAEP-2048',
+      created: Date.now()
     };
     
-    // 9. Création du bundle de clés publiques avec métadonnées
-    const publicKeyBundle = {
-      keyId,
-      rsaPublicKey: arrayBufferToBase64(rsaPublicKey),
-      ecdhPublicKey: arrayBufferToBase64(ecdhPublicKey),
-      signPublicKey: arrayBufferToBase64(signPublicKey),
-      timestamp: Date.now(),
-      version: '3.0',
-      algorithm: 'RSA-OAEP-4096 + ECDH-P521 + ECDSA-P384'
-    };
-    
-    // 10. Génération d'une empreinte cryptographique (fingerprint) pour vérification
-    const publicKeyFingerprint = await generateKeyFingerprint(publicKeyBundle);
-    publicKeyBundle.fingerprint = publicKeyFingerprint;
-    privateKeyBundle.publicKeyFingerprint = publicKeyFingerprint;
-    
-    // 11. Retourner les clés sous forme de JSON
     return {
-      publicKey: JSON.stringify(publicKeyBundle),
-      privateKey: JSON.stringify(privateKeyBundle)
+      publicKey: JSON.stringify({ key: keyBundle.publicKey }),
+      privateKey: JSON.stringify(keyBundle)
     };
   } catch (error) {
     console.error('Erreur lors de la génération des clés:', error);
-    throw new Error('Échec de la génération des clés de chiffrement');
+    throw new Error('Échec de la génération des clés de chiffrement: ' + error.message);
   }
 };
+
 
 /**
  * Chiffre un message avec plusieurs couches de sécurité

@@ -166,9 +166,12 @@ exports.sendContactRequest = async (req, res, next) => {
       });
     }
     
+    console.log(`Processing contact request from user ${req.user.username} to ${username}`);
+    
     // Get recipient user
     const recipient = await getUserByUsername(username);
     if (!recipient) {
+      console.log(`Recipient user not found: ${username}`);
       return res.status(404).json({
         success: false,
         message: 'User not found. Please check the username and try again.',
@@ -185,7 +188,7 @@ exports.sendContactRequest = async (req, res, next) => {
     
     // Check if users are already contacts
     const contacts = await getUserContacts(senderId);
-    if (contacts.includes(recipient.id)) {
+    if (Array.isArray(contacts) && contacts.includes(recipient.id)) {
       return res.status(400).json({
         success: false,
         message: 'This user is already in your contacts',
@@ -194,7 +197,8 @@ exports.sendContactRequest = async (req, res, next) => {
     
     // Check for existing pending requests between these users
     const outgoingRequests = await getOutgoingContactRequests(senderId);
-    const existingRequest = outgoingRequests.find(req => req.recipientId === recipient.id);
+    const existingRequest = Array.isArray(outgoingRequests) && 
+      outgoingRequests.find(req => req.recipientId === recipient.id);
     
     if (existingRequest) {
       return res.status(400).json({
@@ -205,6 +209,12 @@ exports.sendContactRequest = async (req, res, next) => {
     
     // Get sender info for the request
     const sender = await getUserById(senderId);
+    if (!sender) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve sender information',
+      });
+    }
     
     // Create contact request
     const requestId = uuidv4();
@@ -226,12 +236,14 @@ exports.sendContactRequest = async (req, res, next) => {
     };
     
     await storeContactRequest(request);
+    console.log(`Contact request created: ${requestId} from ${sender.username} to ${recipient.username}`);
     
     res.status(201).json({
       success: true,
       message: 'Contact request sent successfully',
       data: {
         id: requestId,
+        recipientId: recipient.id,
         username: recipient.username,
         displayName: recipient.displayName,
         status: 'pending',
