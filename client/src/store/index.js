@@ -1,10 +1,13 @@
-// client/src/store/index.js
+// Modifiez client/src/store/index.js pour exporter le store
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from './slices/authSlice';
 import messagesReducer from './slices/messagesSlice';
 import contactsReducer from './slices/contactsSlice';
 import groupsReducer from './slices/groupsSlice';
 import { createPersistMiddleware, loadPersistedState } from './persistMiddleware';
+
+// Référence globale au store pour accès par d'autres services
+let globalStore;
 
 // Charger l'état persisté depuis localStorage
 const preloadedState = loadPersistedState();
@@ -44,8 +47,16 @@ const store = configureStore({
   devTools: process.env.NODE_ENV !== 'production',
 });
 
-// Exposer getState et dispatch pour un accès global (utilisé par socket.js)
-export const getStoreState = () => store.getState();
-export const dispatchStoreAction = (action) => store.dispatch(action);
+// Sauvegarder la référence au store
+globalStore = store;
+
+// Fonction pour définir le store globalement (utilisée dans index.js)
+export const setStore = (storeInstance) => {
+  globalStore = storeInstance;
+};
+
+// Exposer getState et dispatch pour un accès global (utilisé par services)
+export const getStoreState = () => globalStore.getState();
+export const dispatchStoreAction = (action) => globalStore.dispatch(action);
 
 export default store;

@@ -263,85 +263,104 @@ const MessageInput = ({ conversationId, recipientId, groupId }) => {
   };
   
   // Soumettre le message
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  // Dans MessageInput.js, modifiez la fonction d'envoi de message:
+
+const handleSubmit = async (e) => {
+  e.preventDefault();
+  
+  // Nettoyer le message
+  const trimmedMessage = message.trim();
+  
+  // Validation
+  if (!trimmedMessage || sending) return;
+  
+  // Vérifications additionnelles
+  if (!recipientId && !groupId) {
+    setError("Impossible d'envoyer le message : destinataire non spécifié.");
+    return;
+  }
+  
+  // Vérifier la clé publique pour les messages directs
+  if (recipientId && !hasPublicKey) {
+    setError("Impossible d'envoyer le message : le destinataire n'a pas partagé sa clé publique. Vous devez être contacts connectés pour échanger des messages en toute sécurité.");
+    return;
+  }
+  
+  // Vérifier si dans un groupe
+  if (groupId && !groupHasMembers) {
+    setError("Impossible d'envoyer le message : aucun membre du groupe n'a de clé publique disponible.");
+    return;
+  }
+  
+  try {
+    setSending(true);
+    setError(null);
     
-    // Nettoyer le message
-    const trimmedMessage = message.trim();
+    // Préparer les données du message
+    const messageData = {
+      message: trimmedMessage,
+      conversationId: normalizedConversationId
+    };
     
-    // Validation
-    if (!trimmedMessage || sending) return;
-    
-    // Vérifications additionnelles
-    if (!recipientId && !groupId) {
-      setError("Impossible d'envoyer le message : destinataire non spécifié.");
-      return;
+    // Ajouter les identifiants appropriés
+    if (recipientId) {
+      messageData.recipientId = recipientId;
+    } else if (groupId) {
+      messageData.groupId = groupId;
     }
     
-    // Vérifier la clé publique pour les messages directs
-    if (recipientId && !hasPublicKey) {
-      setError("Impossible d'envoyer le message : le destinataire n'a pas partagé sa clé publique. Vous devez être contacts connectés pour échanger des messages en toute sécurité.");
-      return;
-    }
+    console.log(`Envoi de message à ${normalizedConversationId}`);
     
-    // Vérifier si dans un groupe
-    if (groupId && !groupHasMembers) {
-      setError("Impossible d'envoyer le message : aucun membre du groupe n'a de clé publique disponible.");
-      return;
-    }
+    // Vérifier explicitement la connexion socket avant l'envoi
+    const isSocketConnected = socketService.isConnected();
+    console.log(`État de la connexion socket: ${isSocketConnected ? 'connecté' : 'déconnecté'}`);
     
-    try {
-      setSending(true);
-      setError(null);
-      
-      // Préparer les données du message
-      const messageData = {
-        message: trimmedMessage,
-        conversationId: normalizedConversationId
-      };
-      
-      // Ajouter les identifiants appropriés
-      if (recipientId) {
-        messageData.recipientId = recipientId;
-      } else if (groupId) {
-        messageData.groupId = groupId;
+    // Si le socket n'est pas connecté, tenter une reconnexion
+    if (!isSocketConnected) {
+      console.log("Socket non connecté, tentative de reconnexion...");
+      // Essayer de reconnecter le socket en arrière-plan
+      const token = localStorage.getItem('token');
+      if (token) {
+        socketService.connect(token).catch(err => {
+          console.warn("Échec de la reconnexion du socket:", err);
+        });
       }
-      
-      console.log(`Envoi de message à ${normalizedConversationId}`);
-      
-      // Dispatch de l'action d'envoi
-      await dispatch(sendMessage(messageData)).unwrap();
-      
-      // Réinitialiser le formulaire après succès
-      setMessage('');
-      setContentRows(1);
-      setUploadedFile(null);
-      
-      // Focus sur le textarea
-      if (textAreaRef.current) {
-        textAreaRef.current.focus();
-      }
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      
-      // Gérer les erreurs spécifiques
-      if (typeof error === 'string') {
-        if (error.includes('public key')) {
-          setError("Impossible d'envoyer le message en toute sécurité. Assurez-vous d'être connecté avec ce contact avant d'échanger des messages.");
-        } else if (error.includes('network') || error.includes('connexion')) {
-          setError("Problème de connexion. Le message sera envoyé dès que vous serez à nouveau en ligne.");
-        } else {
-          setError(error);
-        }
-      } else if (error && error.message) {
-        setError(error.message);
+    }
+    
+    // Dispatch de l'action d'envoi, même en cas de déconnexion
+    // La bibliothèque gère maintenant la mise en file d'attente des messages
+    await dispatch(sendMessage(messageData)).unwrap();
+    
+    // Réinitialiser le formulaire après succès
+    setMessage('');
+    setContentRows(1);
+    setUploadedFile(null);
+    
+    // Focus sur le textarea
+    if (textAreaRef.current) {
+      textAreaRef.current.focus();
+    }
+  } catch (error) {
+    console.error('Failed to send message:', error);
+    
+    // Gérer les erreurs spécifiques
+    if (typeof error === 'string') {
+      if (error.includes('public key')) {
+        setError("Impossible d'envoyer le message en toute sécurité. Assurez-vous d'être connecté avec ce contact avant d'échanger des messages.");
+      } else if (error.includes('network') || error.includes('connexion')) {
+        setError("Problème de connexion. Le message sera envoyé dès que vous serez à nouveau en ligne.");
       } else {
-        setError("Échec de l'envoi du message. Veuillez réessayer.");
+        setError(error);
       }
-    } finally {
-      setSending(false);
+    } else if (error && error.message) {
+      setError(error.message);
+    } else {
+      setError("Échec de l'envoi du message. Veuillez réessayer.");
     }
-  };
+  } finally {
+    setSending(false);
+  }
+};
   
   // Gérer les touches spéciales (notamment Entrée pour envoyer)
   const handleKeyDown = (e) => {

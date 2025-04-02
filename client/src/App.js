@@ -235,27 +235,55 @@ const App = () => {
 
   // CORRECTION: Utiliser un useEffect séparé pour initialiser le socket une seule fois
   useEffect(() => {
-    if (isAuthenticated && token && !socketInitialized.current) {
-      console.log("Connecting to socket with token (initialization)");
-      
-      // Connecter le socket avec le token
-      if (socketService.connect(token)) {
-        console.log("Socket connected, setting up handlers");
-        socketInitialized.current = true;
-        setSocketConnected(true);
+    const setupSocket = async () => {
+      if (isAuthenticated && token) {
+        console.log("Connecting to socket with token");
         
-        // Configurer les gestionnaires de messages
-        socketService.setupEventHandlers(
-          handlePrivateMessage,
-          handleGroupMessage,
-          handleMessageDelivery,
-          handleTypingIndicator
-        );
-        
-        // Rejoindre tous les groupes de l'utilisateur
-        if (groups && groups.length > 0) {
-          socketService.joinGroups(groups);
+        try {
+          // Connecter le socket avec le token (maintenant cette fonction retourne une Promise)
+          const connected = await socketService.connect(token);
+          
+          if (connected) {
+            console.log("Socket connected successfully, setting up handlers");
+            setSocketConnected(true);
+            
+            // Configurer les gestionnaires de messages
+            socketService.setupEventHandlers(
+              handlePrivateMessage,
+              handleGroupMessage,
+              handleMessageDelivery,
+              handleTypingIndicator
+            );
+            
+            // Rejoindre tous les groupes de l'utilisateur
+            if (groups && groups.length > 0) {
+              socketService.joinGroups(groups);
+            }
+          } else {
+            console.error("Failed to connect socket");
+            setSocketConnected(false);
+            
+            // Programmer une nouvelle tentative après un délai
+            setTimeout(() => {
+              socketInitialized.current = false; // Réinitialiser pour permettre une nouvelle tentative
+            }, 5000);
+          }
+        } catch (error) {
+          console.error("Socket connection error:", error);
+          setSocketConnected(false);
         }
+      }
+    };
+    
+    if (isAuthenticated && token && !socketInitialized.current) {
+      socketInitialized.current = true; // Marquer comme initialisé
+      setupSocket();
+    } else if (!isAuthenticated) {
+      // Si l'utilisateur est déconnecté, réinitialiser l'état
+      socketInitialized.current = false;
+      if (socketConnected) {
+        socketService.disconnect();
+        setSocketConnected(false);
       }
     }
     
@@ -277,6 +305,32 @@ const App = () => {
     groups,
     socketConnected
   ]);
+
+  // Ajouter un effet pour la reconnexion en cas de perte de connexion
+  useEffect(() => {
+    const checkConnection = () => {
+      if (isAuthenticated && token && !socketService.isConnected()) {
+        console.log("Socket disconnected, attempting to reconnect");
+        socketInitialized.current = false; // Réinitialiser pour permettre une nouvelle tentative
+      }
+    };
+    
+    // Vérifier la connexion régulièrement
+    const intervalId = setInterval(checkConnection, 10000); // Vérifier toutes les 10 secondes
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [isAuthenticated, token]);
+
+  // CORRECTION: Effet pour reconnecter le socket si les groupes changent
+  useEffect(() => {
+    if (socketConnected && groups && groups.length > 0) {
+      console.log("Joining groups after groups update");
+      // Rejoindre tous les nouveaux groupes
+      socketService.joinGroups(groups);
+    }
+  }, [groups, socketConnected]);
 
   // Initialiser l'application
   useEffect(() => {
@@ -301,15 +355,6 @@ const App = () => {
     
     initializeApp();
   }, [dispatch]);
-
-  // CORRECTION: Effet pour reconnecter le socket si les groupes changent
-  useEffect(() => {
-    if (socketConnected && groups && groups.length > 0) {
-      console.log("Joining groups after groups update");
-      // Rejoindre tous les nouveaux groupes
-      socketService.joinGroups(groups);
-    }
-  }, [groups, socketConnected]);
 
   if (!initialized) {
     // Afficher un écran de chargement

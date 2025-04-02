@@ -225,7 +225,6 @@ export const fetchConversationMessages = createAsyncThunk(
   }
 );
 
-
 export const sendMessage = createAsyncThunk(
   'messages/sendMessage',
   async ({ recipientId, groupId, message, conversationId }, { rejectWithValue, getState }) => {
@@ -295,10 +294,17 @@ export const sendMessage = createAsyncThunk(
         
         console.log('Message payload prepared for direct message');
         
-        // Essayer d'envoyer via socket d'abord
-        if (socketService.isConnected()) {
+        // Vérifier si le socket est vraiment connecté avant d'envoyer
+        const socketConnected = socketService.isConnected();
+        console.log('Socket connection status:', socketConnected ? 'connected' : 'disconnected');
+        
+        if (socketConnected) {
           console.log('Socket connected, sending message via socket');
-          socketService.sendPrivateMessage(messagePayload);
+          const sent = socketService.sendPrivateMessage(messagePayload);
+          if (!sent) {
+            console.warn('Socket send returned false, message queued for retry');
+            // Le message est déjà mis en file d'attente par socketService
+          }
         } else {
           console.log('Socket not connected, saving for offline sync');
           // Sauvegarder pour synchronisation quand connexion rétablie
@@ -385,10 +391,14 @@ export const sendMessage = createAsyncThunk(
         
         console.log('Group message payload prepared');
         
-        // Essayer d'envoyer via socket d'abord
+        // Vérifier si le socket est vraiment connecté avant d'envoyer
         if (socketService.isConnected()) {
           console.log('Socket connected, sending group message via socket');
-          socketService.sendGroupMessage(groupMessagePayload);
+          const sent = socketService.sendGroupMessage(groupMessagePayload);
+          if (!sent) {
+            console.warn('Socket group send returned false, message queued for retry');
+            // Le message est déjà mis en file d'attente par socketService
+          }
         } else {
           console.log('Socket not connected, saving group message for offline sync');
           // Sauvegarder pour synchronisation quand connexion rétablie
@@ -497,6 +507,23 @@ const messagesSlice = createSlice({
           state.conversations[normalizedId][messageIndex].status = status;
         }
       }
+    },
+    updatePendingMessages: (state) => {
+      // Parcourir toutes les conversations
+      Object.keys(state.conversations).forEach(conversationId => {
+        const messages = state.conversations[conversationId];
+        
+        // Mettre à jour le statut des messages en attente
+        state.conversations[conversationId] = messages.map(message => {
+          if (message.status === 'pending' && socketService.isConnected()) {
+            return {
+              ...message,
+              status: 'sent'
+            };
+          }
+          return message;
+        });
+      });
     },
     clearMessageError: (state) => {
       state.error = null;
@@ -667,6 +694,24 @@ const messagesSlice = createSlice({
       })
       .addCase(sendMessage.rejected, (state, action) => {
         state.error = action.payload || 'Échec de l\'envoi du message';
+      })
+      // Action spéciale pour mettre à jour les messages en attente
+      .addCase('messages/updatePendingMessages', (state, action) => {
+        // Parcourir toutes les conversations
+        Object.keys(state.conversations).forEach(conversationId => {
+          const messages = state.conversations[conversationId];
+          
+          // Mettre à jour le statut des messages en attente
+          state.conversations[conversationId] = messages.map(message => {
+            if (message.status === 'pending' && socketService.isConnected()) {
+              return {
+                ...message,
+                status: 'sent'
+              };
+            }
+            return message;
+          });
+        });
       });
   },
 });
@@ -679,7 +724,8 @@ export const {
   markConversationAsRead,
   hydrateConversations,
   clearConversation,
-  clearAllConversations
+  clearAllConversations,
+  updatePendingMessages
 } = messagesSlice.actions;
 
 export default messagesSlice.reducer;

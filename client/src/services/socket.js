@@ -18,6 +18,9 @@ let messageHandlers = {
   error: console.error
 };
 
+// Liste des messages en attente pour réessayer leur envoi
+let pendingMessages = [];
+
 // Fonction utilitaire pour normaliser les IDs de conversation
 const normalizeConversationId = (id) => {
   if (!id) return id;
@@ -53,79 +56,102 @@ const debounce = (func, wait) => {
 // Service socket optimisé avec gestion des reconnexions et meilleure gestion des erreurs
 const socketService = {
   connect: (token) => {
-    try {
-      if (!token) {
-        console.error('[Socket] Erreur: Token d\'authentification manquant');
-        return false;
-      }
+    return new Promise((resolve, reject) => {
+      try {
+        if (!token) {
+          console.error('[Socket] Erreur: Token d\'authentification manquant');
+          return resolve(false);
+        }
 
-      // Si un socket existe déjà, le déconnecter d'abord
-      if (socket) {
-        socket.disconnect();
-        socket = null;
-      }
+        // Si un socket existe déjà, le déconnecter d'abord
+        if (socket) {
+          socket.disconnect();
+          socket = null;
+        }
 
-      // Réinitialiser le compteur de tentatives
-      reconnectAttempts = 0;
-      
-      // Nettoyer tout timer de reconnexion existant
-      if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-
-      // Détermination de l'URL du socket basée sur l'environnement
-      const socketUrl = process.env.REACT_APP_SOCKET_URL || envConfig.socketUrl || 'http://localhost:5000';
-      const socketPath = envConfig.socketPath || '/socket.io';
-      
-      console.log(`[Socket] Connexion au serveur: ${socketUrl}, path: ${socketPath}`);
-
-      // Création de la connexion socket avec configuration robuste
-      socket = io(socketUrl, {
-        auth: { token },
-        path: socketPath,
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 20000,
-        withCredentials: true,
-        autoConnect: true
-      });
-
-      // Configuration des événements de base
-      socket.on('connect', () => {
-        console.log('[Socket] Connexion établie avec succès');
-        // Réinitialiser le compteur de tentatives à la reconnexion réussie
+        // Réinitialiser le compteur de tentatives
         reconnectAttempts = 0;
-      });
+        
+        // Nettoyer tout timer de reconnexion existant
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
 
-      socket.on('disconnect', (reason) => {
-        console.warn(`[Socket] Déconnecté: ${reason}`);
-        // Si la déconnexion n'est pas volontaire, tenter de se reconnecter
-        if (reason === 'io server disconnect' || reason === 'transport close') {
+        // Détermination de l'URL du socket basée sur l'environnement
+        const socketUrl = process.env.REACT_APP_SOCKET_URL || envConfig.socketUrl || 'http://localhost:5000';
+        const socketPath = envConfig.socketPath || '/socket.io';
+        
+        console.log(`[Socket] Connexion au serveur: ${socketUrl}, path: ${socketPath}`);
+
+        // Création de la connexion socket avec configuration robuste
+        socket = io(socketUrl, {
+          auth: { token },
+          path: socketPath,
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000,
+          reconnectionDelayMax: 5000,
+          timeout: 20000,
+          withCredentials: true,
+          autoConnect: true
+        });
+
+        // Définir un délai pour la connexion
+        const connectionTimeout = setTimeout(() => {
+          if (socket && !socket.connected) {
+            console.error('[Socket] Délai de connexion dépassé');
+            socket.disconnect();
+            resolve(false);
+          }
+        }, 10000); // 10 secondes de délai
+
+        // Configuration des événements de base
+        socket.on('connect', () => {
+          console.log('[Socket] Connexion établie avec succès');
+          // Réinitialiser le compteur de tentatives à la reconnexion réussie
+          reconnectAttempts = 0;
+          clearTimeout(connectionTimeout);
+          
+          // Retransmettre les messages en attente
+          socketService.retrySendingPendingMessages();
+          
+          resolve(true);
+        });
+
+        socket.on('disconnect', (reason) => {
+          console.warn(`[Socket] Déconnecté: ${reason}`);
+          // Si la déconnexion n'est pas volontaire, tenter de se reconnecter
+          if (reason === 'io server disconnect' || reason === 'transport close') {
+            socketService.scheduleReconnect();
+          }
+        });
+
+        socket.on('connect_error', (error) => {
+          console.error('[Socket] Erreur de connexion:', error);
           socketService.scheduleReconnect();
+          clearTimeout(connectionTimeout);
+          resolve(false);
+        });
+        
+        socket.on('error', (error) => {
+          console.error('[Socket] Erreur reçue du serveur:', error);
+          if (messageHandlers.error) {
+            messageHandlers.error(error);
+          }
+        });
+        
+        // En cas d'échec de connexion sans événement d'erreur
+        if (!socket) {
+          clearTimeout(connectionTimeout);
+          resolve(false);
         }
-      });
-
-      socket.on('connect_error', (error) => {
-        console.error('[Socket] Erreur de connexion:', error);
-        socketService.scheduleReconnect();
-      });
-      
-      socket.on('error', (error) => {
-        console.error('[Socket] Erreur reçue du serveur:', error);
-        if (messageHandlers.error) {
-          messageHandlers.error(error);
-        }
-      });
-
-      return true;
-    } catch (error) {
-      console.error('[Socket] Erreur lors de la connexion:', error);
-      return false;
-    }
+      } catch (error) {
+        console.error('[Socket] Erreur lors de la connexion:', error);
+        resolve(false);
+      }
+    });
   },
   
   // Planifier une tentative de reconnexion avec back-off exponentiel
@@ -304,10 +330,55 @@ const socketService = {
     return true;
   },
 
+  // Ajout d'un message à la liste d'attente pour réessai
+  addPendingMessage: (messageData) => {
+    pendingMessages.push({
+      type: messageData.groupId ? 'group' : 'private',
+      data: messageData,
+      timestamp: Date.now()
+    });
+    console.log(`[Socket] Message ajouté à la file d'attente. Total en attente: ${pendingMessages.length}`);
+  },
+  
+  // Réessayer d'envoyer les messages en attente
+  retrySendingPendingMessages: () => {
+    if (!socket || !socket.connected || pendingMessages.length === 0) return;
+    
+    console.log(`[Socket] Tentative d'envoi de ${pendingMessages.length} messages en attente`);
+    
+    // Copier la liste pour éviter les problèmes lors de la modification
+    const messagesToSend = [...pendingMessages];
+    pendingMessages = [];
+    
+    // Envoyer les messages avec un petit délai entre chaque envoi
+    messagesToSend.forEach((pendingMessage, index) => {
+      setTimeout(() => {
+        try {
+          if (socket && socket.connected) {
+            if (pendingMessage.type === 'group') {
+              socket.emit('group-message', pendingMessage.data);
+              console.log(`[Socket] Message de groupe en attente envoyé: ${pendingMessage.data.groupId}`);
+            } else {
+              socket.emit('private-message', pendingMessage.data);
+              console.log(`[Socket] Message privé en attente envoyé: ${pendingMessage.data.recipientId}`);
+            }
+          } else {
+            // Si nous avons perdu la connexion, remettre le message en file d'attente
+            pendingMessages.push(pendingMessage);
+          }
+        } catch (error) {
+          console.error('[Socket] Erreur lors de la réémission d\'un message:', error);
+          pendingMessages.push(pendingMessage);
+        }
+      }, index * 300); // 300ms de délai entre chaque message
+    });
+  },
+
   // Envoi d'un message privé avec validation et gestion d'erreur
   sendPrivateMessage: (messageData) => {
     if (!socket || !socket.connected) {
-      console.warn('[Socket] Socket non connecté, impossible d\'envoyer un message privé');
+      console.warn('[Socket] Socket non connecté, mise en file d\'attente du message privé');
+      socketService.addPendingMessage(messageData);
       return false;
     }
     
@@ -329,6 +400,7 @@ const socketService = {
       return true;
     } catch (error) {
       console.error('[Socket] Erreur lors de l\'envoi d\'un message privé:', error);
+      socketService.addPendingMessage(messageData);
       return false;
     }
   },
@@ -336,7 +408,8 @@ const socketService = {
   // Envoi d'un message de groupe avec validation et gestion d'erreur
   sendGroupMessage: (messageData) => {
     if (!socket || !socket.connected) {
-      console.warn('[Socket] Socket non connecté, impossible d\'envoyer un message de groupe');
+      console.warn('[Socket] Socket non connecté, mise en file d\'attente du message de groupe');
+      socketService.addPendingMessage(messageData);
       return false;
     }
     
@@ -358,6 +431,7 @@ const socketService = {
       return true;
     } catch (error) {
       console.error('[Socket] Erreur lors de l\'envoi d\'un message de groupe:', error);
+      socketService.addPendingMessage(messageData);
       return false;
     }
   },
