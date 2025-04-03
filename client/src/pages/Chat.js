@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
-import { RiArrowLeftSLine, RiInformationLine } from 'react-icons/ri';
-import { FiAlertCircle } from 'react-icons/fi';
+import { RiArrowLeftSLine, RiInformationLine, RiCloseLine } from 'react-icons/ri';
+import { FiAlertCircle, FiUserCheck, FiUsers } from 'react-icons/fi';
 
 // Redux actions
 import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../store/slices/messagesSlice';
@@ -14,12 +14,14 @@ import { fetchGroups } from '../store/slices/groupsSlice';
 import Avatar from '../components/ui/Avatar';
 import MessageList from '../components/chat/MessageList';
 import MessageInput from '../components/chat/MessageInput';
+import Button from '../components/ui/Button';
 
 const ChatContainer = styled.div`
   display: flex;
   flex-direction: column;
   height: 100vh;
   background-color: ${({ theme }) => theme.colors.background};
+  position: relative;
 `;
 
 const ChatHeader = styled.header`
@@ -209,15 +211,42 @@ const CloseButton = styled.button`
   font-size: 24px;
   cursor: pointer;
   color: ${({ theme }) => theme.colors.textPrimary};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+`;
+
+const MemberList = styled.div`
+  max-height: 300px;
+  overflow-y: auto;
+`;
+
+const MemberItem = styled.div`
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  
+  span {
+    margin-left: 10px;
+  }
+`;
+
+const InfoSection = styled.div`
+  margin-bottom: 20px;
+`;
+
+const InfoSectionTitle = styled.h4`
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
+  color: ${({ theme }) => theme.colors.textSecondary};
 `;
 
 const Chat = () => {
   const { conversationId } = useParams();
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  
-  // Référence pour suivre le chargement initial
-  const initialLoadDone = useRef(false);
   
   // Normaliser l'ID de conversation pour tout le composant
   const normalizedId = useMemo(() => {
@@ -236,19 +265,12 @@ const Chat = () => {
   const [error, setError] = useState(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const [onlineStatus, setOnlineStatus] = useState(false);
-  
-  // Fonction pour afficher des informations de débogage
-  const debugConversation = useCallback(() => {
-    console.log(`Chat debug - ID: ${normalizedId}, Group: ${isGroup}, User: ${user?.id}`);
-  }, [normalizedId, isGroup, user]);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   
   // Charger les contacts et groupes si nécessaire - une seule fois
   useEffect(() => {
-    if (initialLoadDone.current) return;
-    
     const loadData = async () => {
       try {
-        console.log('Initial data load in Chat component');
         // Charger les contacts si nécessaire
         if (contacts.length === 0 && !contactsLoading) {
           await dispatch(fetchContacts()).unwrap();
@@ -259,9 +281,8 @@ const Chat = () => {
           await dispatch(fetchGroups()).unwrap();
         }
         
-        initialLoadDone.current = true;
+        setInitialLoadComplete(true);
       } catch (err) {
-        console.error('Error loading initial data in Chat:', err);
         setError("Erreur lors du chargement des données initiales");
       }
     };
@@ -272,8 +293,6 @@ const Chat = () => {
   // Configurer la conversation basée sur l'ID
   useEffect(() => {
     if (!conversationId || !normalizedId) return;
-    
-    console.log(`Opening conversation ${normalizedId}`);
     
     // Réinitialiser les erreurs
     setError(null);
@@ -293,7 +312,7 @@ const Chat = () => {
   
   // Configurer les détails de la conversation après le chargement des données
   useEffect(() => {
-    if (!conversationId || !user || !initialLoadDone.current) return;
+    if (!conversationId || !user || !initialLoadComplete) return;
     
     let currentConversation = null;
     
@@ -308,7 +327,6 @@ const Chat = () => {
           isGroup: true
         };
       } else if (!groupsLoading && groups.length > 0) {
-        console.error('Group not found:', groupId);
         setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
     } else if (normalizedId.includes(':')) {
@@ -329,13 +347,11 @@ const Chat = () => {
           // Simuler un statut en ligne aléatoire (pour démo)
           setOnlineStatus(Math.random() > 0.5);
         } else if (!contactsLoading && contacts.length > 0) {
-          console.error('Contact not found:', otherUserId);
           setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
     } else {
-      // Format d'ID non standard - Pour UUID
-      console.log('Non-standard conversation ID format, trying direct load');
+      // Format d'ID non standard
       currentConversation = {
         id: normalizedId,
         name: "Conversation",
@@ -345,9 +361,8 @@ const Chat = () => {
     }
     
     setConversation(currentConversation);
-    debugConversation();
     
-  }, [normalizedId, isGroup, user, contacts, groups, conversationId, contactsLoading, groupsLoading, debugConversation]);
+  }, [normalizedId, isGroup, user, contacts, groups, conversationId, contactsLoading, groupsLoading, initialLoadComplete]);
   
   // Mettre à jour l'erreur si une erreur Redux est détectée
   useEffect(() => {
@@ -365,6 +380,13 @@ const Chat = () => {
   const toggleInfoPanel = () => {
     setInfoOpen(!infoOpen);
   };
+  
+  // Récupérer le contact actuel pour l'affichage du profil
+  const getCurrentContact = useCallback(() => {
+    if (!conversation || isGroup) return null;
+    
+    return contacts.find(c => c.id === conversation.id) || conversation;
+  }, [conversation, contacts, isGroup]);
   
   // Afficher un état d'erreur
   if (error) {
@@ -414,7 +436,9 @@ const Chat = () => {
       <InfoPanel open={infoOpen}>
         <InfoPanelHeader>
           <h3>Informations</h3>
-          <CloseButton onClick={toggleInfoPanel}>&times;</CloseButton>
+          <CloseButton onClick={toggleInfoPanel}>
+            <RiCloseLine />
+          </CloseButton>
         </InfoPanelHeader>
         
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '20px' }}>
@@ -435,40 +459,43 @@ const Chat = () => {
         </div>
         
         {isGroup && conversation.members && (
-          <div>
-            <h4>Membres ({conversation.members.length})</h4>
-            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+          <InfoSection>
+            <InfoSectionTitle>
+              <FiUsers style={{ marginRight: '5px' }} />
+              Membres ({conversation.members.length})
+            </InfoSectionTitle>
+            <MemberList>
               {conversation.members.map(memberId => {
                 const member = contacts.find(c => c.id === memberId) || { id: memberId, username: 'Inconnu' };
                 return (
-                  <div key={memberId} style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    padding: '8px 0',
-                    borderBottom: '1px solid rgba(255,255,255,0.1)'
-                  }}>
+                  <MemberItem key={memberId}>
                     <Avatar 
                       name={member.displayName || member.username} 
                       size="small"
                     />
-                    <span style={{ marginLeft: '10px' }}>
+                    <span>
                       {member.displayName || member.username}
                       {member.id === user?.id && ' (Vous)'}
                     </span>
-                  </div>
+                  </MemberItem>
                 );
               })}
-            </div>
-          </div>
+            </MemberList>
+          </InfoSection>
         )}
         
         {!isGroup && (
-          <div>
-            <h4>Options</h4>
-            <StyledButton style={{ width: '100%', marginTop: '10px' }}>
+          <InfoSection>
+            <InfoSectionTitle>Options</InfoSectionTitle>
+            <Button 
+              variant="contained" 
+              fullWidth
+              startIcon={<FiUserCheck />}
+              style={{ marginTop: '10px' }}
+            >
               Voir le profil
-            </StyledButton>
-          </div>
+            </Button>
+          </InfoSection>
         )}
       </InfoPanel>
     );

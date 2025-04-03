@@ -1,4 +1,3 @@
-// client/src/App.js
 import React, { useEffect, createContext, useState, useCallback, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
@@ -8,6 +7,7 @@ import { setKeys } from './store/slices/authSlice';
 import { addMessage, updateMessageStatus, normalizeConversationId } from './store/slices/messagesSlice';
 import { decryptMessage } from './services/encryption';
 import { rehydrateStoreAction } from './store/persistMiddleware';
+import { setupBackgroundSync, cleanupBackgroundSync } from './services/backgroundSync';
 
 // Components
 import PrivateRoute from './components/routing/PrivateRoute';
@@ -46,54 +46,42 @@ const App = () => {
   const { isAuthenticated, token, user } = useSelector((state) => state.auth);
   const { groups } = useSelector((state) => state.groups);
   const dispatch = useDispatch();
+  
   const [initialized, setInitialized] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
   
-  // Référence pour suivre si on a déjà initialisé le socket
+  // References for tracking initialization and sync interval
   const socketInitialized = useRef(false);
+  const backgroundSyncInterval = useRef(null);
 
-  // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
-  // Gestionnaire de messages privés corrigé pour App.js
+  // Define message handlers as callbacks to avoid unnecessary recreations
   const handlePrivateMessage = useCallback(async (data) => {
+    if (!data || !user || !user.id) return;
+
     try {
-      console.log('Message privé reçu:', {
-        expediteur: data.senderUsername, 
-        longueurMessage: data.message?.length,
-        avecCleChiffree: !!data.encryptedKey,
-        conversationId: data.conversationId || 'non-défini'
-      });
-      
-      if (!user || !user.id) {
-        console.error('Données utilisateur non disponibles pour traiter le message privé');
-        return;
-      }
-      
-      // Récupérer les informations de l'utilisateur
-      const { privateKey } = getEncryptionKeys() || {};
+      // Get user encryption keys
+      const keys = getEncryptionKeys();
+      const privateKey = keys?.privateKey;
       
       if (!privateKey) {
-        console.error('Aucune clé privée disponible pour le déchiffrement');
+        console.error('No private key available for decryption');
         return;
       }
       
-      // Utiliser l'ID de conversation fourni par le serveur si disponible
-      // Sinon, le créer à partir des IDs des participants
+      // Normalize conversation ID
       let conversationId = data.conversationId;
       if (!conversationId) {
-        // Créer l'ID de conversation normalisé
         const participants = [user.id, data.senderId].sort();
         conversationId = participants.join(':');
-        console.log(`ID de conversation créé localement: ${conversationId}`);
-      } else {
-        console.log(`ID de conversation reçu du serveur: ${conversationId}`);
       }
       
-      // Essayer de déchiffrer le message
+      // Decrypt message if possible
       let messageText = data.message;
+      let encryptionFailed = false;
+      
       try {
         if (data.encryptedKey && privateKey) {
-          console.log('Tentative de déchiffrement du message avec encryptedKey');
-          const metadata = data.metadata || '{}'; 
+          const metadata = data.metadata || '{}';
           messageText = await decryptMessage(
             data.message,
             data.encryptedKey,
@@ -102,69 +90,63 @@ const App = () => {
             null,
             metadata
           );
-          console.log('Message déchiffré avec succès');
         }
       } catch (decryptError) {
-        console.error('Échec du déchiffrement du message reçu:', decryptError);
-        messageText = '[Message chiffré - Impossible de déchiffrer]';
+        console.error('Failed to decrypt received message:', decryptError);
+        messageText = '[Encrypted message - Unable to decrypt]';
+        encryptionFailed = true;
       }
       
-      // Dispatch l'action pour ajouter le message
+      // Create message object
       const messageObject = {
         ...data,
         message: messageText,
         conversationId,
-        id: data.id || Date.now().toString() + Math.floor(Math.random() * 1000),
+        encryptionFailed,
+        id: data.id || `${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         timestamp: data.timestamp || Date.now()
       };
       
-      console.log('Ajout du message au store:', messageObject.id);
+      // Add message to store
+      dispatch(addMessage({ message: messageObject }));
       
-      // Important: Utiliser la structure correcte pour l'action
-      dispatch(addMessage({
-        message: messageObject,
-      }));
-      
-      // Notification si l'app est en arrière-plan
+      // Show notification if app is in background
       if (document.hidden) {
-        showNotification(data.senderUsername, messageText);
+        showNotification(data.senderUsername, encryptionFailed ? 
+          '[Encrypted message]' : messageText.substring(0, 60) + (messageText.length > 60 ? '...' : ''));
       }
       
-      // Persister les messages immédiatement
+      // Persist messages
       dispatch(rehydrateStoreAction());
     } catch (error) {
-      console.error('Erreur de traitement du message privé:', error);
+      console.error('Error processing private message:', error);
     }
   }, [dispatch, user]);
 
-
   const handleGroupMessage = useCallback(async (data) => {
+    if (!data || !data.groupId || !user || !user.id) return;
+
     try {
-      console.log('Received group message:', data);
-      
-      if (!user || !user.id) {
-        console.error('User data not available for handling group message');
-        return;
-      }
-      
       const conversationId = `group:${data.groupId}`;
       
-      // Récupérer la clé privée
-      const { privateKey } = getEncryptionKeys() || {};
+      // Get encryption keys
+      const keys = getEncryptionKeys();
+      const privateKey = keys?.privateKey;
       
       if (!privateKey) {
         console.error('No private key available for decryption');
         return;
       }
       
-      // Extraire la clé pour cet utilisateur 
+      // Decrypt message if possible
       let messageText = data.message;
+      let encryptionFailed = false;
+      
       try {
-        // Vérifier si ce message contient une clé pour cet utilisateur
-        const encryptedKey = data.encryptedKeys && data.encryptedKeys[user.id];
+        // Check if this message contains a key for this user
+        const encryptedKey = data.encryptedKeys?.[user.id];
         
         if (encryptedKey && privateKey) {
-          console.log('Trying to decrypt group message with user key');
           const metadata = data.metadata || '{}';
           messageText = await decryptMessage(
             data.message,
@@ -174,134 +156,147 @@ const App = () => {
             null,
             metadata
           );
-          console.log('Group message decrypted successfully');
         }
       } catch (decryptError) {
         console.error('Failed to decrypt received group message:', decryptError);
-        messageText = '[Message chiffré - Impossible de déchiffrer]';
+        messageText = '[Encrypted message - Unable to decrypt]';
+        encryptionFailed = true;
       }
       
-      // Dispatch l'action pour ajouter le message
-      dispatch(addMessage({
-        message: {
-          ...data,
-          message: messageText,
-          conversationId,
-          id: data.id || Date.now().toString(),
-          timestamp: data.timestamp || Date.now()
-        },
-      }));
+      // Create message object
+      const messageObject = {
+        ...data,
+        message: messageText,
+        conversationId,
+        encryptionFailed,
+        id: data.id || `${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        timestamp: data.timestamp || Date.now()
+      };
       
-      // Notification si en arrière-plan
+      // Add message to store
+      dispatch(addMessage({ message: messageObject }));
+      
+      // Show notification if app is in background
       if (document.hidden) {
         const group = groups?.find(g => g.id === data.groupId);
         const title = group ? `${data.senderUsername} in ${group.name}` : data.senderUsername;
-        showNotification(title, messageText);
+        showNotification(title, encryptionFailed ? 
+          '[Encrypted message]' : messageText.substring(0, 60) + (messageText.length > 60 ? '...' : ''));
       }
     } catch (error) {
       console.error('Error handling group message:', error);
     }
   }, [dispatch, user, groups]);
-  
+
   const handleMessageDelivery = useCallback((data) => {
-    try {
-      if (!user || !user.id || !data || !data.recipientId) {
-        return;
-      }
-      
-      const conversationId = [user.id, data.recipientId].sort().join(':');
-      
-      dispatch(updateMessageStatus({
-        messageId: data.id,
-        conversationId,
-        status: data.delivered ? 'delivered' : 'sent',
-      }));
-    } catch (error) {
-      console.error('Error handling message delivery:', error);
-    }
-  }, [dispatch, user]);
-  
-  // Gestionnaire d'indicateur de frappe (simple placeholder)
+    if (!data || !data.messageId || !data.conversationId) return;
+    
+    dispatch(updateMessageStatus({
+      messageId: data.messageId,
+      conversationId: normalizeConversationId(data.conversationId),
+      status: data.delivered ? 'delivered' : 'sent',
+    }));
+  }, [dispatch]);
+
   const handleTypingIndicator = useCallback((data) => {
-    // Implémentation simplifiée - vous pourriez ajouter une action Redux pour afficher un indicateur de frappe
+    // This functionality can be extended with a Redux action for typing indicators
+    // For now, we'll just log it
     console.log('Typing indicator received:', data);
   }, []);
-  
-  // Fonction utilitaire pour afficher des notifications
+
+  // Utility function for displaying notifications
   const showNotification = (title, body) => {
-    if ('Notification' in window) {
-      if (Notification.permission === 'granted') {
-        new Notification(title, { body, icon: '/logo192.png' });
-      } else if (Notification.permission !== 'denied') {
-        Notification.requestPermission().then(permission => {
-          if (permission === 'granted') {
-            new Notification(title, { body, icon: '/logo192.png' });
-          }
-        });
-      }
+    if (!('Notification' in window)) return;
+    
+    if (Notification.permission === 'granted') {
+      new Notification(title, { 
+        body: body, 
+        icon: '/logo192.png',
+        silent: false
+      });
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          new Notification(title, { 
+            body: body, 
+            icon: '/logo192.png',
+            silent: false
+          });
+        }
+      });
     }
   };
 
-  // CORRECTION: Utiliser un useEffect séparé pour initialiser le socket une seule fois
+  // Effect for socket connection and reconnection
   useEffect(() => {
+    let socketCleanup = null;
+    
     const setupSocket = async () => {
-      if (isAuthenticated && token) {
-        console.log("Connecting to socket with token");
+      if (!isAuthenticated || !token) return;
+      
+      try {
+        // Connect socket with token
+        const connected = await socketService.connect(token);
         
-        try {
-          // Connecter le socket avec le token (maintenant cette fonction retourne une Promise)
-          const connected = await socketService.connect(token);
+        if (connected) {
+          setSocketConnected(true);
           
-          if (connected) {
-            console.log("Socket connected successfully, setting up handlers");
-            setSocketConnected(true);
-            
-            // Configurer les gestionnaires de messages
-            socketService.setupEventHandlers(
-              handlePrivateMessage,
-              handleGroupMessage,
-              handleMessageDelivery,
-              handleTypingIndicator
-            );
-            
-            // Rejoindre tous les groupes de l'utilisateur
-            if (groups && groups.length > 0) {
-              socketService.joinGroups(groups);
-            }
-          } else {
-            console.error("Failed to connect socket");
-            setSocketConnected(false);
-            
-            // Programmer une nouvelle tentative après un délai
-            setTimeout(() => {
-              socketInitialized.current = false; // Réinitialiser pour permettre une nouvelle tentative
-            }, 5000);
+          // Set up event handlers
+          socketService.setupEventHandlers(
+            handlePrivateMessage,
+            handleGroupMessage,
+            handleMessageDelivery,
+            handleTypingIndicator
+          );
+          
+          // Join all user groups
+          if (groups && groups.length > 0) {
+            socketService.joinGroups(groups);
           }
-        } catch (error) {
-          console.error("Socket connection error:", error);
+          
+          // Set up background sync
+          if (backgroundSyncInterval.current) {
+            cleanupBackgroundSync(backgroundSyncInterval.current);
+          }
+          backgroundSyncInterval.current = setupBackgroundSync();
+          
+          // Return cleanup function
+          socketCleanup = () => {
+            if (socketService.isConnected()) {
+              socketService.disconnect();
+            }
+            if (backgroundSyncInterval.current) {
+              cleanupBackgroundSync(backgroundSyncInterval.current);
+              backgroundSyncInterval.current = null;
+            }
+          };
+        } else {
           setSocketConnected(false);
+          socketInitialized.current = false;
         }
+      } catch (error) {
+        console.error('Socket initialization error:', error);
+        setSocketConnected(false);
+        socketInitialized.current = false;
       }
     };
     
     if (isAuthenticated && token && !socketInitialized.current) {
-      socketInitialized.current = true; // Marquer comme initialisé
+      socketInitialized.current = true;
       setupSocket();
     } else if (!isAuthenticated) {
-      // Si l'utilisateur est déconnecté, réinitialiser l'état
       socketInitialized.current = false;
-      if (socketConnected) {
-        socketService.disconnect();
-        setSocketConnected(false);
+      setSocketConnected(false);
+      
+      if (socketCleanup) {
+        socketCleanup();
       }
     }
     
-    // Nettoyage à la déconnexion
+    // Cleanup on unmount
     return () => {
-      if (socketConnected) {
-        console.log("Disconnecting socket on cleanup");
-        socketService.disconnect();
-        setSocketConnected(false);
+      if (socketCleanup) {
+        socketCleanup();
       }
     };
   }, [
@@ -311,62 +306,53 @@ const App = () => {
     handleGroupMessage,
     handleMessageDelivery,
     handleTypingIndicator,
-    groups,
-    socketConnected
+    groups
   ]);
 
-  // Ajouter un effet pour la reconnexion en cas de perte de connexion
-  useEffect(() => {
-    const checkConnection = () => {
-      if (isAuthenticated && token && !socketService.isConnected()) {
-        console.log("Socket disconnected, attempting to reconnect");
-        socketInitialized.current = false; // Réinitialiser pour permettre une nouvelle tentative
-      }
-    };
-    
-    // Vérifier la connexion régulièrement
-    const intervalId = setInterval(checkConnection, 10000); // Vérifier toutes les 10 secondes
-    
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [isAuthenticated, token]);
-
-  // CORRECTION: Effet pour reconnecter le socket si les groupes changent
+  // Effect for joining groups when they change
   useEffect(() => {
     if (socketConnected && groups && groups.length > 0) {
-      console.log("Joining groups after groups update");
-      // Rejoindre tous les nouveaux groupes
       socketService.joinGroups(groups);
     }
   }, [groups, socketConnected]);
 
-  // Initialiser l'application
+  // Initialize app
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        // Réhydrater le store dès le début
+        // Rehydrate store
         dispatch(rehydrateStoreAction());
         
-        // Charger les clés de chiffrement si disponibles
+        // Load encryption keys
         const keys = getEncryptionKeys();
         if (keys) {
-          console.log("Chargement des clés de chiffrement depuis le stockage");
           dispatch(setKeys(keys));
+        }
+        
+        // Request notification permissions if not already granted
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
         }
         
         setInitialized(true);
       } catch (error) {
-        console.error("Erreur d'initialisation de l'app:", error);
+        console.error('App initialization error:', error);
         setInitialized(true);
       }
     };
     
     initializeApp();
+    
+    // Cleanup on unmount
+    return () => {
+      if (backgroundSyncInterval.current) {
+        cleanupBackgroundSync(backgroundSyncInterval.current);
+      }
+    };
   }, [dispatch]);
 
+  // Display loading screen until initialized
   if (!initialized) {
-    // Afficher un écran de chargement
     return (
       <div style={{ 
         display: 'flex', 
@@ -374,9 +360,11 @@ const App = () => {
         alignItems: 'center', 
         height: '100vh',
         backgroundColor: '#121212',
-        color: '#ffffff'
+        color: '#ffffff',
+        flexDirection: 'column'
       }}>
-        <h2>Chargement de Murmur...</h2>
+        <div style={{ marginBottom: '20px', fontSize: '24px' }}>Murmur</div>
+        <div>Loading secure messaging...</div>
       </div>
     );
   }

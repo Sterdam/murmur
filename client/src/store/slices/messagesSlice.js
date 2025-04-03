@@ -1,4 +1,3 @@
-// client/src/store/slices/messagesSlice.js
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import api from '../../services/api';
 import socketService from '../../services/socket';
@@ -36,7 +35,6 @@ export const fetchConversationMessages = createAsyncThunk(
       
       // Normaliser l'ID de conversation avant toute opération
       const normalizedId = normalizeConversationId(conversationId);
-      console.log(`Fetching messages for: ${conversationId} → normalized to: ${normalizedId}`);
       
       // Éviter les requêtes multiples simultanées pour la même conversation
       const state = getState();
@@ -54,7 +52,6 @@ export const fetchConversationMessages = createAsyncThunk(
         }
         
         const messages = response.data.data || [];
-        console.log(`Received ${messages.length} messages from API for conversation: ${normalizedId}`);
         
         // État courant et clés de déchiffrement
         const currentUser = state.auth.user;
@@ -64,7 +61,7 @@ export const fetchConversationMessages = createAsyncThunk(
         const privateKey = keys?.privateKey || state.auth.privateKey;
         
         if (!privateKey) {
-          console.warn('Private key not available for decryption');
+          throw new Error('Clé privée non disponible pour le déchiffrement');
         }
         
         // Déchiffrer les messages
@@ -72,7 +69,6 @@ export const fetchConversationMessages = createAsyncThunk(
           messages.map(async (message) => {
             // Validation de base
             if (!message) {
-              console.warn('Received null or undefined message');
               return null;
             }
             
@@ -138,7 +134,6 @@ export const fetchConversationMessages = createAsyncThunk(
                 encryptionFailed: false
               };
             } catch (error) {
-              console.error('Failed to decrypt message:', error, message);
               return {
                 ...message,
                 message: '[Message chiffré - Échec du déchiffrement]',
@@ -152,11 +147,9 @@ export const fetchConversationMessages = createAsyncThunk(
         // Filtrer les messages nuls ou indéfinis
         const validMessages = decryptedMessages.filter(msg => msg !== null);
         
-        console.log(`Successfully processed ${validMessages.length} messages for conversation: ${normalizedId}`);
-        
         // Mettre en cache les messages pour l'utilisation hors ligne
-        cacheOfflineData('messages', validMessages).catch(err => {
-          console.warn('Failed to cache messages for offline use:', err);
+        cacheOfflineData('messages', validMessages).catch(() => {
+          // Erreur silencieuse - ne pas bloquer le flux
         });
         
         return {
@@ -167,7 +160,6 @@ export const fetchConversationMessages = createAsyncThunk(
       } catch (error) {
         // Cas d'erreur 429 (trop de requêtes)
         if (error.response?.status === 429 && existingMessages.length > 0) {
-          console.warn('Rate limited while fetching messages, using existing data');
           return {
             conversationId: normalizedId,
             messages: existingMessages,
@@ -176,13 +168,11 @@ export const fetchConversationMessages = createAsyncThunk(
         
         // En cas d'erreur 403 (accès refusé), gérer spécifiquement
         if (error.response?.status === 403) {
-          console.error(`Unauthorized access to conversation: ${normalizedId}`);
           return rejectWithValue('Accès non autorisé à cette conversation');
         }
         
         // Erreur réseau
         if (error.message === 'Network Error' && existingMessages.length > 0) {
-          console.warn('Network error while fetching messages, using existing data');
           return {
             conversationId: normalizedId,
             messages: existingMessages,
@@ -192,7 +182,6 @@ export const fetchConversationMessages = createAsyncThunk(
         throw error;
       }
     } catch (error) {
-      console.error('Error fetching messages:', error);
       return rejectWithValue(
         error.response?.data?.message || 
         error.message || 
@@ -210,13 +199,6 @@ export const sendMessage = createAsyncThunk(
       if (!message || (!recipientId && !groupId)) {
         return rejectWithValue('Paramètres de message invalides');
       }
-      
-      console.log('Sending message:', { 
-        recipientId, 
-        groupId, 
-        messageLength: message?.length,
-        conversationId
-      });
       
       const currentUser = getState().auth.user;
       const contacts = getState().contacts.contacts;
@@ -244,21 +226,16 @@ export const sendMessage = createAsyncThunk(
         );
         
         if (!recipient) {
-          console.error('Recipient not found in contacts:', recipientId);
           return rejectWithValue('Destinataire introuvable dans vos contacts');
         }
         
         if (!recipient.publicKey) {
-          console.error('Recipient public key not available:', recipient);
           return rejectWithValue('Clé publique du destinataire non disponible - Vous devez être contacts connectés pour échanger des messages');
         }
         
-        console.log('Encrypting message for recipient:', recipient.username);
         try {
           encryptedData = await encryptMessage(message, recipient.publicKey);
-          console.log('Message encrypted successfully');
         } catch (err) {
-          console.error('Encryption error:', err);
           return rejectWithValue('Échec du chiffrement du message: ' + err.message);
         }
         
@@ -269,33 +246,26 @@ export const sendMessage = createAsyncThunk(
           metadata: encryptedData.metadata
         };
         
-        console.log('Message payload prepared for direct message');
-        
         // Vérifier si le socket est vraiment connecté avant d'envoyer
         const socketConnected = socketService.isConnected();
-        console.log('Socket connection status:', socketConnected ? 'connected' : 'disconnected');
         
         if (socketConnected) {
-          console.log('Socket connected, sending message via socket');
           const sent = socketService.sendPrivateMessage(messagePayload);
           if (!sent) {
-            console.warn('Socket send returned false, message queued for retry');
             // Le message est déjà mis en file d'attente par socketService
           }
         } else {
-          console.log('Socket not connected, saving for offline sync');
           // Sauvegarder pour synchronisation quand connexion rétablie
           await storeOfflineMessage(messagePayload);
           
           // Essayer de synchroniser immédiatement
-          syncOfflineMessages().catch(err => {
-            console.warn('Failed to sync offline messages:', err);
+          syncOfflineMessages().catch(() => {
+            // Erreur silencieuse - ne pas bloquer le flux
           });
         }
         
         // Créer un ID de message unique
         const msgId = Date.now().toString() + Math.floor(Math.random() * 1000);
-        console.log('Generated message ID:', msgId);
         
         // Retourner le message pour mise à jour dans le store Redux
         return {
@@ -311,16 +281,12 @@ export const sendMessage = createAsyncThunk(
       } 
       // Message de groupe
       else if (groupId) {
-        console.log('Sending group message to group:', groupId);
         // Trouver le groupe
         const group = groups.find((g) => g.id === groupId);
         
         if (!group) {
-          console.error('Group not found:', groupId);
           return rejectWithValue('Groupe introuvable');
         }
-        
-        console.log('Group found:', group.name, 'with members:', group.members?.length || 0);
         
         if (!group.members || !Array.isArray(group.members) || group.members.length === 0) {
           return rejectWithValue('Aucun membre dans ce groupe');
@@ -338,24 +304,17 @@ export const sendMessage = createAsyncThunk(
           if (member && member.publicKey) {
             membersPublicKeys.push(member.publicKey);
             membersWithKeys[memberId] = member.publicKey;
-          } else {
-            console.log(`Member ${memberId} has no public key available`);
           }
         }
         
         if (membersPublicKeys.length === 0) {
-          console.error('No members with public keys found in the group');
           return rejectWithValue('Aucun membre avec clé publique trouvé dans le groupe');
         }
-        
-        console.log(`Found ${membersPublicKeys.length} members with public keys`);
         
         try {
           // Utiliser la fonction optimisée pour le chiffrement de groupe
           encryptedData = await encryptGroupMessage(message, membersPublicKeys);
-          console.log('Group message encrypted successfully');
         } catch (err) {
-          console.error('Group encryption error:', err);
           return rejectWithValue('Échec du chiffrement du message de groupe: ' + err.message);
         }
         
@@ -366,24 +325,19 @@ export const sendMessage = createAsyncThunk(
           metadata: encryptedData.metadata
         };
         
-        console.log('Group message payload prepared');
-        
         // Vérifier si le socket est vraiment connecté avant d'envoyer
         if (socketService.isConnected()) {
-          console.log('Socket connected, sending group message via socket');
           const sent = socketService.sendGroupMessage(groupMessagePayload);
           if (!sent) {
-            console.warn('Socket group send returned false, message queued for retry');
             // Le message est déjà mis en file d'attente par socketService
           }
         } else {
-          console.log('Socket not connected, saving group message for offline sync');
           // Sauvegarder pour synchronisation quand connexion rétablie
           await storeOfflineMessage(groupMessagePayload);
           
           // Essayer de synchroniser immédiatement
-          syncOfflineMessages().catch(err => {
-            console.warn('Failed to sync offline messages:', err);
+          syncOfflineMessages().catch(() => {
+            // Erreur silencieuse - ne pas bloquer le flux
           });
         }
         
@@ -405,7 +359,6 @@ export const sendMessage = createAsyncThunk(
       
       return rejectWithValue('Configuration de message invalide');
     } catch (error) {
-      console.error('Send message error:', error);
       return rejectWithValue(error.message || 'Échec de l\'envoi du message');
     }
   }
@@ -431,7 +384,6 @@ const messagesSlice = createSlice({
     addMessage: (state, action) => {
       const { message } = action.payload;
       if (!message || !message.conversationId) {
-        console.error('Invalid message object:', message);
         return;
       }
       
@@ -458,8 +410,6 @@ const messagesSlice = createSlice({
           const timestampB = b.timestamp || 0;
           return timestampA - timestampB;
         });
-        
-        console.log(`Message added to conversation ${conversationId}, ID: ${message.id}`);
       } else {
         // Le message existe déjà, mise à jour si nécessaire
         state.conversations[conversationId][existingMessageIndex] = {
@@ -611,17 +561,12 @@ const messagesSlice = createSlice({
           
           // Incrémenter le compteur de requêtes
           state.fetchCount = (state.fetchCount || 0) + 1;
-          
-          console.log(`Updated messages for conversation ${conversationId}, count: ${mergedMessages.length}, total fetches: ${state.fetchCount}`);
-        } else {
-          console.error('Invalid payload format in fetchConversationMessages.fulfilled:', action.payload);
         }
       })
       .addCase(fetchConversationMessages.rejected, (state, action) => {
         state.loading = false;
         state.loadingConversationId = null;
         state.error = action.payload || 'Échec du chargement des messages';
-        console.error('Failed to fetch messages:', action.payload);
       })
       
       // Send Message
@@ -632,7 +577,6 @@ const messagesSlice = createSlice({
         const message = action.payload;
         
         if (!message || !message.conversationId) {
-          console.error('Invalid message payload in sendMessage.fulfilled:', message);
           return;
         }
         
@@ -658,11 +602,6 @@ const messagesSlice = createSlice({
             const timestampB = b.timestamp || 0;
             return timestampA - timestampB;
           });
-          
-          console.log(`Message added to conversation ${conversationId}, new count:`, 
-            state.conversations[conversationId].length);
-        } else {
-          console.log(`Message ${message.id} already exists in conversation ${conversationId}`);
         }
       })
       .addCase(sendMessage.rejected, (state, action) => {
