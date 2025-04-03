@@ -1,15 +1,35 @@
-// server/src/services/socket.js - Corrigé
+// server/src/services/socket.js
 const { verifyToken } = require('./auth');
 const { storeMessage, getUserById } = require('./redis');
 const geoRestrictionCheck = require('../middleware/geoRestriction');
 
 // Store active user connections
 const activeConnections = new Map();
+const userRooms = new Map(); // Garder trace des rooms de chaque utilisateur
 
 // Helper function to get client IP address
 const getClientIp = (socket) => {
   return socket.handshake.headers['x-forwarded-for'] || 
          socket.request.connection.remoteAddress;
+};
+
+// Fonction pour normaliser les IDs de conversation - COHÉRENTE avec le client
+const normalizeConversationId = (id) => {
+  if (!id) return id;
+  
+  // Si c'est un ID de groupe, le laisser tel quel
+  if (id.startsWith('group:')) return id;
+  
+  // Si c'est un ID direct au format "id1:id2", trier les parties pour consistance
+  if (id.includes(':')) {
+    const parts = id.split(':').filter(Boolean);
+    if (parts.length === 2) {
+      return parts.sort().join(':');
+    }
+  }
+  
+  // Si c'est un UUID ou autre format non reconnu, le retourner tel quel
+  return id;
 };
 
 /**
@@ -67,7 +87,6 @@ module.exports = (io) => {
         };
         
         // Use a modified version of geo restriction
-        // with strictMode only if user has allowedRegions set
         const geoOptions = {
           strictMode: Array.isArray(user.allowedRegions) && user.allowedRegions.length > 0
         };
@@ -96,18 +115,23 @@ module.exports = (io) => {
   
   io.on('connection', (socket) => {
     const userId = socket.user.id;
-    console.log(`User connected: ${socket.user.username} (${userId})`);
+    console.log(`User connected: ${socket.user.username} (${userId}), socket ID: ${socket.id}`);
     
     // Store user connection
     activeConnections.set(userId, socket.id);
     
-    // Join user's private room
+    // Join user's private room and update userRooms
     socket.join(`user:${userId}`);
+    userRooms.set(userId, new Set([`user:${userId}`]));
+    
+    // Join all existing conversations for this user
+    // (Cette fonctionnalité pourrait être implémentée pour rejoindre automatiquement les conversations existantes)
     
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`User disconnected: ${socket.user.username} (${userId})`);
       activeConnections.delete(userId);
+      userRooms.delete(userId);
     });
     
     // Handle joining groups
@@ -116,14 +140,31 @@ module.exports = (io) => {
         console.warn('Invalid group ID provided');
         return;
       }
-      socket.join(`group:${groupId}`);
-      console.log(`User ${socket.user.username} joined group ${groupId}`);
+      
+      const roomId = `group:${groupId}`;
+      socket.join(roomId);
+      
+      // Mettre à jour la liste des rooms de l'utilisateur
+      if (!userRooms.has(userId)) {
+        userRooms.set(userId, new Set());
+      }
+      userRooms.get(userId).add(roomId);
+      
+      console.log(`User ${socket.user.username} joined group ${groupId}, room: ${roomId}`);
     });
     
     // Handle leaving groups
     socket.on('leave-group', (groupId) => {
       if (!groupId) return;
-      socket.leave(`group:${groupId}`);
+      
+      const roomId = `group:${groupId}`;
+      socket.leave(roomId);
+      
+      // Mettre à jour la liste des rooms de l'utilisateur
+      if (userRooms.has(userId)) {
+        userRooms.get(userId).delete(roomId);
+      }
+      
       console.log(`User ${socket.user.username} left group ${groupId}`);
     });
     
@@ -147,16 +188,20 @@ module.exports = (io) => {
           return;
         }
         
-        // Normaliser l'ID de conversation (trier les IDs)
-        const conversationId = [userId, recipientId].sort().join(':');
+        // Normaliser l'ID de conversation (trier les IDs) - IMPORTANT pour la cohérence
+        const conversationId = normalizeConversationId([userId, recipientId].join(':'));
         console.log(`Normalized conversation ID: ${conversationId}`);
         
+        // Générer un ID de message unique
+        const messageId = Date.now().toString() + Math.floor(Math.random() * 10000);
+        
         // Store message in Redis with all the information
-        const messageId = await storeMessage({
+        await storeMessage({
+          id: messageId,
           senderId: userId,
           senderUsername: socket.user.username,
           recipientId,
-          conversationId: conversationId,
+          conversationId,
           message,
           encryptedKey,
           metadata,
@@ -170,20 +215,32 @@ module.exports = (io) => {
         const recipientSocketId = activeConnections.get(recipientId);
         
         if (recipientSocketId) {
-          console.log(`Recipient ${recipientId} is online, sending message directly`);
+          console.log(`Recipient ${recipientId} is online, sending message directly to socket ${recipientSocketId}`);
+          
+          // Faire rejoindre la room de conversation au destinataire si nécessaire
+          const recipientRooms = userRooms.get(recipientId) || new Set();
+          if (!recipientRooms.has(`conversation:${conversationId}`)) {
+            const recipientSocket = io.sockets.sockets.get(recipientSocketId);
+            if (recipientSocket) {
+              recipientSocket.join(`conversation:${conversationId}`);
+              recipientRooms.add(`conversation:${conversationId}`);
+            }
+          }
           
           // Send message to recipient with all encryption information
           io.to(`user:${recipientId}`).emit('private-message', {
             id: messageId,
             senderId: userId,
             senderUsername: socket.user.username,
-            recipientId: recipientId,
-            conversationId: conversationId, // Important: Utiliser l'ID normalisé
+            recipientId,
+            conversationId,
             message,
             encryptedKey,
             metadata,
             timestamp: data.timestamp || Date.now(),
           });
+          
+          console.log(`Message sent to recipient in room user:${recipientId}`);
         } else {
           console.log(`Recipient ${recipientId} is offline, message will be delivered later`);
         }
@@ -192,7 +249,7 @@ module.exports = (io) => {
         socket.emit('message-delivered', {
           id: messageId,
           recipientId,
-          conversationId: conversationId, // Important: Utiliser l'ID normalisé
+          conversationId,
           delivered: !!recipientSocketId,
           timestamp: Date.now()
         });
@@ -224,8 +281,12 @@ module.exports = (io) => {
         // Normaliser l'ID de conversation pour les groupes
         const conversationId = `group:${groupId}`;
         
+        // Générer un ID de message unique
+        const messageId = Date.now().toString() + Math.floor(Math.random() * 10000);
+        
         // Store message in Redis with all information
-        const messageId = await storeMessage({
+        await storeMessage({
+          id: messageId,
           senderId: userId,
           senderUsername: socket.user.username,
           groupId,
@@ -239,19 +300,28 @@ module.exports = (io) => {
         console.log(`Group message stored in Redis with ID: ${messageId} for group: ${groupId}`);
         
         // Broadcast message to group with all encryption information
-        io.to(`group:${groupId}`).emit('group-message', {
+        io.to(conversationId).emit('group-message', {
           id: messageId,
           senderId: userId,
           senderUsername: socket.user.username,
           groupId,
-          conversationId, // Important: Utiliser l'ID normalisé
+          conversationId,
           message,
           encryptedKeys,
           metadata,
           timestamp: data.timestamp || Date.now(),
         });
         
-        console.log(`Group message ${messageId} broadcast to group: ${groupId}`);
+        console.log(`Group message ${messageId} broadcast to room: ${conversationId}`);
+        
+        // Confirm delivery to sender
+        socket.emit('message-delivered', {
+          id: messageId,
+          groupId,
+          conversationId,
+          delivered: true,
+          timestamp: Date.now()
+        });
       } catch (error) {
         console.error('Error processing group message:', error);
         socket.emit('error', { message: 'Failed to send group message: ' + error.message });
@@ -259,8 +329,17 @@ module.exports = (io) => {
     });
     
     // Handle message read status
-    socket.on('mark-as-read', async (messageId) => {
-      // Implementation will be added later
+    socket.on('mark-as-read', async (data) => {
+      try {
+        const { messageId, conversationId } = data;
+        if (!messageId || !conversationId) return;
+        
+        console.log(`User ${userId} marked message ${messageId} as read in conversation ${conversationId}`);
+        // Implementation pour mettre à jour le statut de lecture dans Redis
+        // puis émettre un événement aux autres participants
+      } catch (error) {
+        console.error('Error marking message as read:', error);
+      }
     });
     
     // Handle typing indicator
@@ -270,8 +349,7 @@ module.exports = (io) => {
       
       if (conversationId.startsWith('group:')) {
         // Group conversation
-        const groupId = conversationId.replace('group:', '');
-        socket.to(`group:${groupId}`).emit('typing', {
+        socket.to(conversationId).emit('typing', {
           senderId: userId,
           senderUsername: socket.user.username,
           conversationId,

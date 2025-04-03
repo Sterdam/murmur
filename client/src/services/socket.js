@@ -1,6 +1,7 @@
-// client/src/services/socket.js - Corrigé
+// client/src/services/socket.js - Optimisé et corrigé
 import { io } from 'socket.io-client';
 import envConfig from '../config/env';
+import { getStoreState } from '../store';
 
 // Singleton pour le socket
 let socket = null;
@@ -21,15 +22,18 @@ let messageHandlers = {
 // Liste des messages en attente pour réessayer leur envoi
 let pendingMessages = [];
 
+// Map des rooms jointes pour éviter de les rejoindre plusieurs fois
+const joinedRooms = new Set();
+
 // Fonction utilitaire pour normaliser les IDs de conversation
 const normalizeConversationId = (id) => {
   if (!id) return id;
   
   // Si c'est un ID de groupe, le laisser tel quel
-  if (id.startsWith('group:')) return id;
+  if (typeof id === 'string' && id.startsWith('group:')) return id;
   
   // Si c'est un ID de conversation directe au format "id1:id2", tri des IDs
-  if (id.includes(':')) {
+  if (typeof id === 'string' && id.includes(':')) {
     const parts = id.split(':').filter(Boolean);
     if (parts.length === 2) {
       return parts.sort().join(':');
@@ -63,8 +67,9 @@ const socketService = {
           return resolve(false);
         }
 
-        // Si un socket existe déjà, le déconnecter d'abord
+        // Si un socket existe déjà, le déconnecter proprement d'abord
         if (socket) {
+          console.log('[Socket] Socket existant trouvé, déconnexion préalable...');
           socket.disconnect();
           socket = null;
         }
@@ -109,10 +114,13 @@ const socketService = {
 
         // Configuration des événements de base
         socket.on('connect', () => {
-          console.log('[Socket] Connexion établie avec succès');
+          console.log('[Socket] Connexion établie avec succès, socket.id =', socket.id);
           // Réinitialiser le compteur de tentatives à la reconnexion réussie
           reconnectAttempts = 0;
           clearTimeout(connectionTimeout);
+          
+          // Vider la liste des rooms jointes (pour les rejoindre à nouveau)
+          joinedRooms.clear();
           
           // Retransmettre les messages en attente
           socketService.retrySendingPendingMessages();
@@ -121,7 +129,7 @@ const socketService = {
         });
 
         socket.on('disconnect', (reason) => {
-          console.warn(`[Socket] Déconnecté: ${reason}`);
+          console.warn(`[Socket] Déconnecté: ${reason}, socket.id était ${socket.id}`);
           // Si la déconnexion n'est pas volontaire, tenter de se reconnecter
           if (reason === 'io server disconnect' || reason === 'transport close') {
             socketService.scheduleReconnect();
@@ -129,7 +137,7 @@ const socketService = {
         });
 
         socket.on('connect_error', (error) => {
-          console.error('[Socket] Erreur de connexion:', error);
+          console.error('[Socket] Erreur de connexion:', error.message);
           socketService.scheduleReconnect();
           clearTimeout(connectionTimeout);
           resolve(false);
@@ -192,6 +200,9 @@ const socketService = {
         reconnectTimer = null;
       }
       
+      // Vider la liste des rooms jointes
+      joinedRooms.clear();
+      
       return true;
     }
     return false;
@@ -215,6 +226,8 @@ const socketService = {
       return false;
     }
 
+    console.log('[Socket] Configuration des gestionnaires d\'événements');
+
     // Enregistrer les gestionnaires dans l'objet
     messageHandlers = {
       privateMessage: privateMessageHandler,
@@ -235,8 +248,24 @@ const socketService = {
     if (privateMessageHandler) {
       socket.on('private-message', (data) => {
         try {
-          console.log('[Socket] Message privé reçu:', data ? 'valid' : 'invalid');
+          console.log('[Socket] Message privé reçu:', data ? {
+            senderId: data.senderId,
+            senderUsername: data.senderUsername,
+            conversationId: data.conversationId,
+            messageId: data.id,
+            hasEncryptedKey: !!data.encryptedKey
+          } : 'invalid');
+          
           if (data && data.senderId && data.message) {
+            // Dernier contrôle pour éviter de traiter ses propres messages
+            const state = getStoreState();
+            const currentUserId = state?.auth?.user?.id;
+            
+            if (currentUserId && data.senderId === currentUserId) {
+              console.log('[Socket] Message envoyé par l\'utilisateur actuel, ignoré');
+              return;
+            }
+            
             privateMessageHandler(data);
           } else {
             console.warn('[Socket] Message privé reçu avec format invalide:', data);
@@ -250,8 +279,24 @@ const socketService = {
     if (groupMessageHandler) {
       socket.on('group-message', (data) => {
         try {
-          console.log('[Socket] Message de groupe reçu:', data ? 'valid' : 'invalid');
+          console.log('[Socket] Message de groupe reçu:', data ? {
+            senderId: data.senderId,
+            senderUsername: data.senderUsername,
+            groupId: data.groupId,
+            messageId: data.id,
+            hasEncryptedKeys: !!data.encryptedKeys
+          } : 'invalid');
+          
           if (data && data.senderId && data.groupId && data.message) {
+            // Dernier contrôle pour éviter de traiter ses propres messages
+            const state = getStoreState();
+            const currentUserId = state?.auth?.user?.id;
+            
+            if (currentUserId && data.senderId === currentUserId) {
+              console.log('[Socket] Message de groupe envoyé par l\'utilisateur actuel, ignoré');
+              return;
+            }
+            
             groupMessageHandler(data);
           } else {
             console.warn('[Socket] Message de groupe reçu avec format invalide:', data);
@@ -265,6 +310,7 @@ const socketService = {
     if (messageDeliveredHandler) {
       socket.on('message-delivered', (data) => {
         try {
+          console.log('[Socket] Confirmation de livraison reçue:', data);
           if (data && data.id) {
             messageDeliveredHandler(data);
           }
@@ -292,6 +338,7 @@ const socketService = {
     if (errorHandler) {
       socket.on('error', (error) => {
         try {
+          console.error('[Socket] Erreur reçue:', error);
           errorHandler(error);
         } catch (err) {
           console.error('[Socket] Erreur dans le gestionnaire d\'erreur:', err);
@@ -305,7 +352,7 @@ const socketService = {
   // Joindre un groupe de discussion avec validation
   joinGroup: (groupId) => {
     if (!socket || !socket.connected) {
-      console.warn('[Socket] Socket non connecté, mise en file d\'attente de jonction de groupe');
+      console.warn('[Socket] Socket non connecté, impossible de rejoindre le groupe');
       return false;
     }
     
@@ -314,8 +361,16 @@ const socketService = {
       return false;
     }
 
+    // Éviter de rejoindre la même room plusieurs fois
+    const roomKey = `group:${groupId}`;
+    if (joinedRooms.has(roomKey)) {
+      console.log(`[Socket] Groupe ${groupId} déjà rejoint`);
+      return true;
+    }
+
     console.log(`[Socket] Rejoindre le groupe: ${groupId}`);
     socket.emit('join-group', groupId);
+    joinedRooms.add(roomKey);
     return true;
   },
 
@@ -327,6 +382,7 @@ const socketService = {
 
     console.log(`[Socket] Quitter le groupe: ${groupId}`);
     socket.emit('leave-group', groupId);
+    joinedRooms.delete(`group:${groupId}`);
     return true;
   },
 
@@ -388,13 +444,28 @@ const socketService = {
     }
 
     try {
-      console.log('[Socket] Émission de message privé');
+      console.log('[Socket] Émission de message privé:', {
+        recipientId: messageData.recipientId,
+        hasMessage: !!messageData.message,
+        hasEncryptedKey: !!messageData.encryptedKey
+      });
       
       // Valider et compléter les données
       const dataToSend = {
         ...messageData,
         timestamp: messageData.timestamp || Date.now()
       };
+      
+      // S'assurer que la propriété conversationId est correctement définie
+      if (!dataToSend.conversationId && dataToSend.recipientId) {
+        const state = getStoreState();
+        const currentUserId = state?.auth?.user?.id;
+        
+        if (currentUserId) {
+          dataToSend.conversationId = [currentUserId, dataToSend.recipientId].sort().join(':');
+          console.log(`[Socket] ID de conversation ajouté: ${dataToSend.conversationId}`);
+        }
+      }
       
       socket.emit('private-message', dataToSend);
       return true;
@@ -419,13 +490,27 @@ const socketService = {
     }
 
     try {
-      console.log('[Socket] Émission de message de groupe');
+      console.log('[Socket] Émission de message de groupe:', {
+        groupId: messageData.groupId,
+        hasMessage: !!messageData.message,
+        hasEncryptedKeys: !!messageData.encryptedKeys,
+        keysCount: messageData.encryptedKeys ? Object.keys(messageData.encryptedKeys).length : 0
+      });
       
       // Valider et compléter les données
       const dataToSend = {
         ...messageData,
         timestamp: messageData.timestamp || Date.now()
       };
+      
+      // S'assurer que la propriété conversationId est correctement définie
+      if (!dataToSend.conversationId && dataToSend.groupId) {
+        dataToSend.conversationId = `group:${dataToSend.groupId}`;
+        console.log(`[Socket] ID de conversation ajouté: ${dataToSend.conversationId}`);
+      }
+      
+      // Rejoindre le groupe si ce n'est pas déjà fait
+      socketService.joinGroup(messageData.groupId);
       
       socket.emit('group-message', dataToSend);
       return true;
@@ -468,8 +553,8 @@ const socketService = {
       let joinedCount = 0;
       groups.forEach(group => {
         if (group && group.id) {
-          socket.emit('join-group', group.id);
-          joinedCount++;
+          const success = socketService.joinGroup(group.id);
+          if (success) joinedCount++;
         }
       });
       console.log(`[Socket] ${joinedCount} groupes rejoints`);
