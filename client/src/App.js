@@ -53,12 +53,14 @@ const App = () => {
   const socketInitialized = useRef(false);
 
   // Définir les gestionnaires de messages comme callbacks pour éviter les re-créations inutiles
+  // Gestionnaire de messages privés corrigé pour App.js
   const handlePrivateMessage = useCallback(async (data) => {
     try {
       console.log('Message privé reçu:', {
         expediteur: data.senderUsername, 
         longueurMessage: data.message?.length,
-        avecCleChiffree: !!data.encryptedKey
+        avecCleChiffree: !!data.encryptedKey,
+        conversationId: data.conversationId || 'non-défini'
       });
       
       if (!user || !user.id) {
@@ -74,11 +76,17 @@ const App = () => {
         return;
       }
       
-      // Créer l'ID de conversation normalisé
-      const participants = [user.id, data.senderId].sort();
-      const conversationId = participants.join(':');
-      
-      console.log(`ID de conversation normalisé: ${conversationId}`);
+      // Utiliser l'ID de conversation fourni par le serveur si disponible
+      // Sinon, le créer à partir des IDs des participants
+      let conversationId = data.conversationId;
+      if (!conversationId) {
+        // Créer l'ID de conversation normalisé
+        const participants = [user.id, data.senderId].sort();
+        conversationId = participants.join(':');
+        console.log(`ID de conversation créé localement: ${conversationId}`);
+      } else {
+        console.log(`ID de conversation reçu du serveur: ${conversationId}`);
+      }
       
       // Essayer de déchiffrer le message
       let messageText = data.message;
@@ -128,7 +136,8 @@ const App = () => {
       console.error('Erreur de traitement du message privé:', error);
     }
   }, [dispatch, user]);
-  
+
+
   const handleGroupMessage = useCallback(async (data) => {
     try {
       console.log('Received group message:', data);

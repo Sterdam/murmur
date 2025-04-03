@@ -96,7 +96,7 @@ module.exports = (io) => {
   
   io.on('connection', (socket) => {
     const userId = socket.user.id;
-    console.log(`User connected: ${socket.user.username}`);
+    console.log(`User connected: ${socket.user.username} (${userId})`);
     
     // Store user connection
     activeConnections.set(userId, socket.id);
@@ -106,7 +106,7 @@ module.exports = (io) => {
     
     // Handle disconnect
     socket.on('disconnect', () => {
-      console.log(`User disconnected: ${socket.user.username}`);
+      console.log(`User disconnected: ${socket.user.username} (${userId})`);
       activeConnections.delete(userId);
     });
     
@@ -132,6 +132,7 @@ module.exports = (io) => {
       try {
         console.log('Received private message from socket:', {
           user: socket.user.username,
+          userId: userId,
           recipient: data.recipientId,
           hasEncryptedKey: !!data.encryptedKey,
           hasMetadata: !!data.metadata
@@ -146,11 +147,16 @@ module.exports = (io) => {
           return;
         }
         
+        // Normaliser l'ID de conversation (trier les IDs)
+        const conversationId = [userId, recipientId].sort().join(':');
+        console.log(`Normalized conversation ID: ${conversationId}`);
+        
         // Store message in Redis with all the information
         const messageId = await storeMessage({
           senderId: userId,
+          senderUsername: socket.user.username,
           recipientId,
-          conversationId: [userId, recipientId].sort().join(':'),
+          conversationId: conversationId,
           message,
           encryptedKey,
           metadata,
@@ -171,6 +177,8 @@ module.exports = (io) => {
             id: messageId,
             senderId: userId,
             senderUsername: socket.user.username,
+            recipientId: recipientId,
+            conversationId: conversationId, // Important: Utiliser l'ID normalisé
             message,
             encryptedKey,
             metadata,
@@ -184,6 +192,7 @@ module.exports = (io) => {
         socket.emit('message-delivered', {
           id: messageId,
           recipientId,
+          conversationId: conversationId, // Important: Utiliser l'ID normalisé
           delivered: !!recipientSocketId,
           timestamp: Date.now()
         });
@@ -212,11 +221,15 @@ module.exports = (io) => {
           return;
         }
         
+        // Normaliser l'ID de conversation pour les groupes
+        const conversationId = `group:${groupId}`;
+        
         // Store message in Redis with all information
         const messageId = await storeMessage({
           senderId: userId,
+          senderUsername: socket.user.username,
           groupId,
-          conversationId: `group:${groupId}`,
+          conversationId,
           message,
           encryptedKeys,
           metadata,
@@ -231,6 +244,7 @@ module.exports = (io) => {
           senderId: userId,
           senderUsername: socket.user.username,
           groupId,
+          conversationId, // Important: Utiliser l'ID normalisé
           message,
           encryptedKeys,
           metadata,

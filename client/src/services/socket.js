@@ -1,4 +1,4 @@
-// client/src/services/socket.js
+// client/src/services/socket.js - Corrigé
 import { io } from 'socket.io-client';
 import envConfig from '../config/env';
 
