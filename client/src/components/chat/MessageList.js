@@ -258,7 +258,7 @@ const EncryptionNote = styled.div`
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
-  const { loading, error, conversations, loadingConversationId } = useSelector((state) => state.messages);
+  const { loading, error: messagesError, conversations, loadingConversationId } = useSelector((state) => state.messages);
   
   // Get messages for this conversation
   const messages = useSelector((state) => {
@@ -285,7 +285,6 @@ const MessageList = ({ conversationId }) => {
       if (loadingRef.current) return;
       
       try {
-        console.log(`Loading messages for conversation: ${conversationId}`);
         loadingRef.current = true;
         setIsLoadingMore(true);
         
@@ -338,7 +337,6 @@ const MessageList = ({ conversationId }) => {
         loadingRef.current = true;
         
         try {
-          console.log('Refreshing messages...');
           await dispatch(fetchConversationMessages(conversationId)).unwrap();
           setLastLoadTime(Date.now());
         } catch (err) {
@@ -360,10 +358,10 @@ const MessageList = ({ conversationId }) => {
   useEffect(() => {
     if (listContainerRef.current && messages.length > 0) {
       const { scrollTop, scrollHeight, clientHeight } = listContainerRef.current;
-      const atBottom = scrollHeight - scrollTop - clientHeight < 50;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
       
       // If we're at the bottom or it's the initial load, scroll to bottom
-      if (atBottom || isInitialLoad) {
+      if (isAtBottom || isInitialLoad) {
         // Use a small timeout to ensure the DOM is updated
         setTimeout(() => {
           if (messagesEndRef.current) {
@@ -495,7 +493,6 @@ const MessageList = ({ conversationId }) => {
     
     // If at the top of the list and there are already messages, load more
     if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore && !loadingRef.current) {
-      console.log('Top of chat reached, loading older messages');
       handleRetry();
     }
   }, [loading, isLoadingMore, messages.length]);
@@ -513,8 +510,8 @@ const MessageList = ({ conversationId }) => {
   }, [handleScroll]);
   
   // Show error state
-  if (localError || error) {
-    const errorMessage = localError || error;
+  if (localError || messagesError) {
+    const errorMessage = localError || messagesError;
     
     if (typeof errorMessage === 'string' && errorMessage.includes('Unauthorized access')) {
       return (
