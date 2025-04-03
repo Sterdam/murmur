@@ -255,19 +255,29 @@ const EncryptionNote = styled.div`
   }
 `;
 
+const DebugInfo = styled.div`
+  font-size: 10px;
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.5);
+`;
+
 const MessageList = ({ conversationId }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
-  const { loading, error: messagesError, conversations, loadingConversationId } = useSelector((state) => state.messages);
+  const { 
+    loading, 
+    error: messagesError, 
+    conversations, 
+    loadingConversationId 
+  } = useSelector((state) => state.messages);
   
   // Get messages for this conversation
-  const messages = useSelector((state) => {
-    return state.messages.conversations[conversationId] || [];
-  });
+  const messages = conversations[conversationId] || [];
   
   const listContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
-  const loadingRef = useRef(false);
+  const isLoadingRef = useRef(false);
+  const hasAttemptedInitialLoadRef = useRef(false);
   const [localError, setLocalError] = useState(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
@@ -275,21 +285,45 @@ const MessageList = ({ conversationId }) => {
   const [lastLoadTime, setLastLoadTime] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasInitiallyLoaded, setHasInitiallyLoaded] = useState(false);
+  const [debugInfo, setDebugInfo] = useState({
+    loadCount: 0,
+    lastLoadStatus: '',
+    lastError: null
+  });
   
-  // Initial load of messages
+  // Initial load of messages - only runs once when conversation changes
   useEffect(() => {
-    if (!conversationId || loadingRef.current) return;
+    if (!conversationId) return;
+    
+    // Reset states when conversation changes
+    setIsInitialLoad(true);
+    setHasInitiallyLoaded(false);
+    setLocalError(null);
+    hasAttemptedInitialLoadRef.current = false;
+    isLoadingRef.current = false;
     
     // Function to load messages
     const loadMessages = async () => {
-      if (loadingRef.current) return;
+      // Skip if already loading or already attempted
+      if (isLoadingRef.current || hasAttemptedInitialLoadRef.current) {
+        return;
+      }
       
       try {
-        loadingRef.current = true;
+        console.log(`Initial load for conversation: ${conversationId}`);
+        isLoadingRef.current = true;
+        hasAttemptedInitialLoadRef.current = true;
         setIsLoadingMore(true);
         
         // Dispatch the fetch action with unwrap to catch errors
         await dispatch(fetchConversationMessages(conversationId)).unwrap();
+        
+        setDebugInfo(prev => ({
+          ...prev,
+          loadCount: prev.loadCount + 1,
+          lastLoadStatus: 'Success - Initial Load',
+          lastError: null
+        }));
         
         setIsInitialLoad(false);
         setHasInitiallyLoaded(true);
@@ -306,9 +340,14 @@ const MessageList = ({ conversationId }) => {
         console.error('Error loading messages:', err);
         setLocalError(err);
         setIsInitialLoad(false);
+        setDebugInfo(prev => ({
+          ...prev,
+          lastLoadStatus: 'Error - Initial Load',
+          lastError: err
+        }));
       } finally {
         setIsLoadingMore(false);
-        loadingRef.current = false;
+        isLoadingRef.current = false;
       }
     };
     
@@ -322,35 +361,74 @@ const MessageList = ({ conversationId }) => {
     };
   }, [conversationId, dispatch, user?.id]);
   
-  // Periodic refresh of messages
+  // Periodic refresh of messages - but with rate limiting
   useEffect(() => {
     if (!conversationId || !hasInitiallyLoaded) return;
     
-    const intervalId = setInterval(() => {
-      // Don't refresh if tab is in background or if loading is in progress
-      if (document.hidden || loadingRef.current || Date.now() - lastLoadTime < 10000) {
-        return;
+    let refreshTimer = null;
+    
+    const scheduleRefresh = () => {
+      // Clear any existing timer
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
       }
       
-      const refreshMessages = async () => {
-        if (loadingRef.current) return;
-        loadingRef.current = true;
-        
-        try {
-          await dispatch(fetchConversationMessages(conversationId)).unwrap();
-          setLastLoadTime(Date.now());
-        } catch (err) {
-          console.warn('Background refresh failed:', err);
-        } finally {
-          loadingRef.current = false;
+      // Set a new timer for refresh
+      refreshTimer = setTimeout(() => {
+        if (document.hidden || isLoadingRef.current) {
+          // If tab is hidden or already loading, reschedule
+          scheduleRefresh();
+          return;
         }
-      };
-      
-      refreshMessages();
-    }, 15000); // Refresh every 15 seconds
+        
+        const now = Date.now();
+        if (now - lastLoadTime < 15000) { // Don't refresh more often than every 15 seconds
+          scheduleRefresh();
+          return;
+        }
+        
+        refreshMessages();
+      }, 15000);
+    };
     
+    const refreshMessages = async () => {
+      if (isLoadingRef.current) return;
+      
+      try {
+        console.log(`Background refresh for conversation: ${conversationId}`);
+        isLoadingRef.current = true;
+        
+        await dispatch(fetchConversationMessages(conversationId)).unwrap();
+        setLastLoadTime(Date.now());
+        
+        setDebugInfo(prev => ({
+          ...prev,
+          loadCount: prev.loadCount + 1,
+          lastLoadStatus: 'Success - Background Refresh',
+          lastError: null
+        }));
+      } catch (err) {
+        console.warn('Background refresh failed:', err);
+        setDebugInfo(prev => ({
+          ...prev,
+          lastLoadStatus: 'Error - Background Refresh',
+          lastError: err
+        }));
+      } finally {
+        isLoadingRef.current = false;
+        // Schedule next refresh after completion
+        scheduleRefresh();
+      }
+    };
+    
+    // Start the refresh cycle
+    scheduleRefresh();
+    
+    // Cleanup on unmount or conversation change
     return () => {
-      clearInterval(intervalId);
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
     };
   }, [conversationId, hasInitiallyLoaded, lastLoadTime, dispatch]);
   
@@ -388,21 +466,35 @@ const MessageList = ({ conversationId }) => {
   
   // Retry loading messages
   const handleRetry = async () => {
-    if (loadingRef.current) return;
+    if (isLoadingRef.current) return;
     
     setLocalError(null);
     setIsLoadingMore(true);
-    loadingRef.current = true;
+    isLoadingRef.current = true;
     
     try {
+      console.log(`Manual retry for conversation: ${conversationId}`);
       await dispatch(fetchConversationMessages(conversationId)).unwrap();
       setLastLoadTime(Date.now());
+      
+      setDebugInfo(prev => ({
+        ...prev,
+        loadCount: prev.loadCount + 1,
+        lastLoadStatus: 'Success - Manual Retry',
+        lastError: null
+      }));
     } catch (err) {
       console.error('Retry failed:', err);
       setLocalError(err);
+      
+      setDebugInfo(prev => ({
+        ...prev,
+        lastLoadStatus: 'Error - Manual Retry',
+        lastError: err
+      }));
     } finally {
       setIsLoadingMore(false);
-      loadingRef.current = false;
+      isLoadingRef.current = false;
     }
   };
   
@@ -485,28 +577,46 @@ const MessageList = ({ conversationId }) => {
     return false;
   };
   
-  // Handle scroll to top to load more messages
+  // Handle scroll to top to load more messages - with throttling
   const handleScroll = useCallback(() => {
-    if (!listContainerRef.current) return;
+    if (!listContainerRef.current || isLoadingRef.current) return;
     
     const { scrollTop } = listContainerRef.current;
+    const now = Date.now();
+    
+    // Throttle: Don't try to load more if loaded recently
+    if (now - lastLoadTime < 2000) {
+      return;
+    }
     
     // If at the top of the list and there are already messages, load more
-    if (scrollTop < 20 && messages.length > 0 && !loading && !isLoadingMore && !loadingRef.current) {
+    if (scrollTop < 20 && messages.length > 0 && !isLoadingMore) {
       handleRetry();
     }
-  }, [loading, isLoadingMore, messages.length]);
+  }, [isLoadingMore, messages.length, lastLoadTime]);
   
-  // Add scroll event listener
+  // Add scroll event listener with throttling
   useEffect(() => {
     const listContainer = listContainerRef.current;
-    if (listContainer) {
-      listContainer.addEventListener('scroll', handleScroll);
-      
-      return () => {
-        listContainer.removeEventListener('scroll', handleScroll);
-      };
-    }
+    if (!listContainer) return;
+    
+    // Use a throttled version of the scroll handler
+    let ticking = false;
+    const throttledScroll = () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          handleScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+    
+    listContainer.addEventListener('scroll', throttledScroll);
+    
+    return () => {
+      listContainer.removeEventListener('scroll', throttledScroll);
+    };
   }, [handleScroll]);
   
   // Show error state
@@ -539,6 +649,7 @@ const MessageList = ({ conversationId }) => {
           <FiRefreshCw />
           Réessayer
         </StyledButton>
+        <DebugInfo>ConvID: {conversationId}, Loaded: {hasInitiallyLoaded ? 'Yes' : 'No'}</DebugInfo>
       </ErrorState>
     );
   }
@@ -552,6 +663,7 @@ const MessageList = ({ conversationId }) => {
           <span>Chargement des messages...</span>
         </LoadingIndicator>
         <p>Veuillez patienter pendant que nous récupérons votre conversation de manière sécurisée.</p>
+        <DebugInfo>ConvID: {conversationId}, Attempt: {hasAttemptedInitialLoadRef.current ? 'Yes' : 'No'}</DebugInfo>
       </EmptyState>
     );
   }
@@ -566,6 +678,11 @@ const MessageList = ({ conversationId }) => {
           <FiLock />
           <span>Tous les messages sont protégés par un chiffrement de bout en bout</span>
         </EncryptionNote>
+        <DebugInfo>
+          ConvID: {conversationId}, 
+          Loaded: {hasInitiallyLoaded ? 'Yes' : 'No'},
+          Count: {debugInfo.loadCount}
+        </DebugInfo>
       </EmptyState>
     );
   }

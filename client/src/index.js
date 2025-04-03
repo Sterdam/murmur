@@ -1,8 +1,9 @@
 // Dans client/src/index.js
+import './setUpRefresh'; // Import this first to ensure refresh functions are available
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider } from 'react-redux';
-import store, { setStore } from './store';
+import store, { setStore } from './store/index';
 import App from './App';
 import * as serviceWorkerRegistration from './serviceWorkerRegistration';
 import { ThemeProvider } from 'styled-components';

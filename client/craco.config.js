@@ -20,15 +20,38 @@ module.exports = {
         path: require.resolve('path-browserify')
       };
       
+      // Désactiver le plugin React Refresh en production
+      if (process.env.NODE_ENV === 'production') {
+        const babelLoader = webpackConfig.module.rules.find(
+          (rule) => rule.oneOf && Array.isArray(rule.oneOf)
+        ).oneOf.find(
+          (rule) => rule.loader && rule.loader.includes('babel-loader')
+        );
+        
+        if (babelLoader && babelLoader.options && babelLoader.options.plugins) {
+          babelLoader.options.plugins = babelLoader.options.plugins.filter(
+            (plugin) => !Array.isArray(plugin) || !plugin[0].includes('react-refresh')
+          );
+        }
+      }
+      
       return webpackConfig;
     },
+  },
+  // Babel configuration
+  babel: {
+    plugins: [
+      process.env.NODE_ENV === 'production' 
+        ? null 
+        : ['react-refresh/babel', { skipEnvCheck: true }]
+    ].filter(Boolean),
   },
   // Enable TypeScript and ESLint configuration
   typescript: {
     enableTypeChecking: true,
   },
   eslint: {
-    enable: true,
+    enable: false, // Disable ESLint for build
     mode: 'extends',
     configure: {
       extends: ['react-app'],

@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import styled from 'styled-components';
 import { RiArrowLeftSLine, RiInformationLine, RiCloseLine } from 'react-icons/ri';
-import { FiAlertCircle, FiUserCheck, FiUsers } from 'react-icons/fi';
+import { FiAlertCircle, FiInfo, FiUserCheck, FiUsers } from 'react-icons/fi';
 
 // Redux actions
 import { fetchConversationMessages, setActiveConversation, normalizeConversationId } from '../store/slices/messagesSlice';
@@ -248,6 +248,11 @@ const Chat = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
   
+  // Référence pour suivre les requêtes en cours
+  const isLoadingRef = useRef(false);
+  const initialDataLoaded = useRef(false);
+  const dataFetchTimeoutRef = useRef(null);
+  
   // Normaliser l'ID de conversation pour tout le composant
   const normalizedId = useMemo(() => {
     return conversationId ? normalizeConversationId(conversationId) : null;
@@ -257,7 +262,11 @@ const Chat = () => {
   const { contacts, loading: contactsLoading } = useSelector((state) => state.contacts);
   const { groups, loading: groupsLoading } = useSelector((state) => state.groups);
   const { user } = useSelector((state) => state.auth);
-  const { loading: messagesLoading, error: messagesError } = useSelector((state) => state.messages);
+  const { 
+    loading: messagesLoading, 
+    error: messagesError,
+    conversations
+  } = useSelector((state) => state.messages);
   
   // États locaux
   const [conversation, setConversation] = useState(null);
@@ -267,9 +276,17 @@ const Chat = () => {
   const [onlineStatus, setOnlineStatus] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   
+  // Vérifier si les données existent déjà pour éviter des chargements inutiles
+  const hasExistingMessages = useMemo(() => {
+    if (!normalizedId || !conversations) return false;
+    return Array.isArray(conversations[normalizedId]) && conversations[normalizedId].length > 0;
+  }, [normalizedId, conversations]);
+  
   // Charger les contacts et groupes si nécessaire - une seule fois
   useEffect(() => {
-    const loadData = async () => {
+    if (initialDataLoaded.current) return;
+    
+    const loadInitialData = async () => {
       try {
         // Charger les contacts si nécessaire
         if (contacts.length === 0 && !contactsLoading) {
@@ -282,12 +299,14 @@ const Chat = () => {
         }
         
         setInitialLoadComplete(true);
+        initialDataLoaded.current = true;
       } catch (err) {
+        console.error("Erreur lors du chargement des données initiales:", err);
         setError("Erreur lors du chargement des données initiales");
       }
     };
     
-    loadData();
+    loadInitialData();
   }, [dispatch, contacts.length, groups.length, contactsLoading, groupsLoading]);
   
   // Configurer la conversation basée sur l'ID
@@ -329,7 +348,7 @@ const Chat = () => {
       } else if (!groupsLoading && groups.length > 0) {
         setError('Groupe non trouvé ou vous n\'êtes pas membre');
       }
-    } else if (normalizedId.includes(':')) {
+    } else if (normalizedId && normalizedId.includes(':')) {
       // Pour les conversations directes
       if (user && contacts.length > 0) {
         // Trouver l'ID de l'autre utilisateur
@@ -350,7 +369,7 @@ const Chat = () => {
           setError('Contact non trouvé ou vous n\'êtes pas connecté avec cette personne');
         }
       }
-    } else {
+    } else if (normalizedId) {
       // Format d'ID non standard
       currentConversation = {
         id: normalizedId,

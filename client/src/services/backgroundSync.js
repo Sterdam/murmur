@@ -1,5 +1,5 @@
 // client/src/services/backgroundSync.js
-import { store } from '../store';
+import { getStoreState, dispatchStoreAction } from '../store/index';
 import socketService from './socket';
 import { storeOfflineMessage, syncOfflineMessages } from '../utils/offlineSync';
 import { updateMessageStatus } from '../store/slices/messagesSlice';
@@ -8,7 +8,7 @@ import { updateMessageStatus } from '../store/slices/messagesSlice';
 export const updatePendingMessages = () => {
   if (socketService.isConnected()) {
     // Déclencher l'action pour mettre à jour les messages en attente
-    store.dispatch({ type: 'messages/updatePendingMessages' });
+    dispatchStoreAction({ type: 'messages/updatePendingMessages' });
     
     // Tenter de synchroniser les messages hors ligne
     syncOfflineMessages().catch(err => {

@@ -1,0 +1,14 @@
+{
+  "env": {
+    "development": {
+      "plugins": [
+        ["react-refresh/babel", {
+          "skipEnvCheck": true
+        }]
+      ]
+    },
+    "production": {
+      "plugins": []
+    }
+  }
+}

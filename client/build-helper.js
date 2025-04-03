@@ -127,4 +127,88 @@ NODE_ENV=production
   console.error('Error creating .env file:', error);
 }
 
+// 4. Créer une configuration Babel pour résoudre le problème de react-refresh
+try {
+  console.log('Creating babel configuration files for React Refresh fix...');
+  
+  // Create .babelrc with environment-specific settings
+  const babelrcContent = `{
+  "env": {
+    "development": {
+      "plugins": [
+        ["react-refresh/babel", {
+          "skipEnvCheck": true
+        }]
+      ]
+    },
+    "production": {
+      "plugins": []
+    }
+  }
+}`;
+  
+  // Create babel.config.js for programmatic configuration
+  const babelConfigContent = `module.exports = function(api) {
+  api.cache(true);
+  
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  const presets = [
+    [
+      '@babel/preset-env',
+      {
+        targets: {
+          browsers: ['>0.2%', 'not dead', 'not op_mini all']
+        }
+      }
+    ],
+    '@babel/preset-react'
+  ];
+  
+  const plugins = [];
+  
+  // Only apply React Refresh in development
+  if (!isProduction) {
+    plugins.push(['react-refresh/babel', { skipEnvCheck: true }]);
+  }
+  
+  return {
+    presets,
+    plugins
+  };
+};`;
+
+  // Create helper file to define React Refresh functions
+  const refreshHelperContent = `// Empty implementation for the React Refresh Signature function
+if (process.env.NODE_ENV !== 'production') {
+  // Only include in development
+  if (typeof window !== 'undefined') {
+    window.$RefreshSig$ = function () {
+      let status = 'active';
+      const savedType = {};
+      return function (type) {
+        if (status !== 'active') {
+          return type;
+        }
+        if (type === savedType.current) {
+          return savedType.current;
+        }
+        savedType.current = type;
+        return savedType.current;
+      };
+    };
+
+    window.$RefreshReg$ = function() {};
+  }
+}`;
+  
+  fs.writeFileSync(path.join(__dirname, '.babelrc'), babelrcContent);
+  fs.writeFileSync(path.join(__dirname, 'babel.config.js'), babelConfigContent);
+  fs.writeFileSync(path.join(__dirname, 'src/setUpRefresh.js'), refreshHelperContent);
+  
+  console.log('Created babel configuration files to fix React Refresh in production');
+} catch (error) {
+  console.error('Error creating babel configuration files:', error);
+}
+
 console.log('Build fixes applied successfully');
